@@ -43,11 +43,12 @@ def load_benchmark(path: Path) -> tuple[list[dict[str, Any]], dict[str, set[str]
     return queries, qrels
 
 
-def evaluate(limit: int, repeats: int, mode: str) -> dict[str, float | int | str]:
+def evaluate(limit: int, repeats: int, mode: str, worst: int = 0) -> dict[str, float | int | str]:
     archive_path = Path(os.environ.get("MAIL_DATASET_ZIP", DEFAULT_ARCHIVE))
     queries, qrels = load_benchmark(archive_path)
     per_query: list[tuple[float, float, float, float]] = []
     latencies: list[float] = []
+    query_losses: list[tuple[float, str, str, str]] = []
 
     for query in queries:
         relevant = qrels.get(query["query_id"], set())
@@ -72,6 +73,8 @@ def evaluate(limit: int, repeats: int, mode: str) -> dict[str, float | int | str
         ndcg10 = dcg / ideal if ideal else 0.0
         mrr10 = next((1 / (rank + 1) for rank, doc_id in enumerate(ids[:10]) if doc_id in relevant), 0.0)
         per_query.append((recall_at(10), recall_at(100), ndcg10, mrr10))
+        if worst and ndcg10 < 1:
+            query_losses.append((ndcg10, query["query_id"], as_of or "", query["query"]))
         latencies.append(elapsed)
 
         # Repeat a warmed query to collect a more stable in-process latency sample.
@@ -85,6 +88,8 @@ def evaluate(limit: int, repeats: int, mode: str) -> dict[str, float | int | str
             )
             latencies.append(time.perf_counter() - started)
 
+    for ndcg, query_id, reference_day, query_text in sorted(query_losses)[:worst]:
+        print(f"nDCG@10={ndcg:.4f} {query_id} {reference_day} {query_text}")
     mean = lambda column: statistics.fmean(row[column] for row in per_query)
     return {
         "mode": mode,
@@ -107,11 +112,14 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=100, help="maximum candidates returned per query")
     parser.add_argument("--latency-repeats", type=int, default=5, help="warm in-process runs per query")
     parser.add_argument("--mode", choices=("active", "lexical"), default="active")
+    parser.add_argument("--worst", type=int, default=0, help="show the lowest-scoring public queries")
     args = parser.parse_args()
-    for key, value in evaluate(args.limit, args.latency_repeats, args.mode).items():
+    if args.worst < 0:
+        parser.error("--worst must be non-negative")
+    for key, value in evaluate(args.limit, args.latency_repeats, args.mode, args.worst).items():
         print(f"{key}: {value:.4f}" if isinstance(value, float) else f"{key}: {value}")
     if args.mode == "active" and search_engine.ranker is not None:
-        print("note: the included reranker is trained on public qrels; use reranker_experiment.py for held-out metrics")
+        print("note: undated requests use the LightGBM model trained on public qrels; parsed dates use deterministic ranking")
 
 
 if __name__ == "__main__":

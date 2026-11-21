@@ -53,16 +53,19 @@ Use the HTTPS URL printed by SSH. Keep the tunnel and Uvicorn running during the
 
 ## Current backend
 
-The search engine extracts one receipt day from dates such as «20 ноября 2026», «20.11.2026», ISO dates, and relative dates such as «вчера». It intersects the selected mailbox's term index with that day's index, then ranks candidates with BM25, Russian lemmatization, a subject boost, and query-term coverage. Without a recognized receipt day, the API retrieves up to 150 candidates each from BM25 and local 128M Potion embeddings. It combines the candidates and reranks them with LightGBM. If the model or index is unavailable, search uses BM25. Query processing and inference run locally.
+The search engine extracts one receipt day from dates such as «20 ноября 2026», «20.11.2026», ISO dates, and relative dates such as «вчера». It intersects the selected mailbox's term index with that day's index, then ranks candidates with BM25 and Russian lemmatization. Within the selected day, the final score favors topic words in the subject or early in the message and rewards words that appear close together. A shared six-letter prefix for long Russian lemmas can connect forms such as «погрузка» and «погрузить». Without a recognized receipt day, the API retrieves up to 150 candidates each from BM25 and local 128M Potion embeddings. It combines the candidates and reranks them with LightGBM. If the model or index is unavailable, search uses BM25. Query processing and inference run locally.
 
-The public development set contains 99 queries and 565 relevance labels. The same query set was used for both rows in this table.
+The public development set contains 99 queries and 565 relevance labels. All rows use the same public queries.
 
 | Mode | Recall@10 | Recall@100 | nDCG@10 | MRR@10 |
 | --- | ---: | ---: | ---: | ---: |
 | BM25 baseline | 0.5239 | 0.8637 | 0.3665 | 0.3582 |
-| Integrated search | 0.8879 | 0.9923 | 0.9304 | 0.9503 |
+| Previous date-aware search | 0.8879 | 0.9923 | 0.9304 | 0.9503 |
+| Date-aware search with topic ranking | 0.9305 | 1.0000 | 0.9890 | 0.9949 |
 
-The organizers measure final quality and latency on their private benchmark. The local integrated HTTP stress test used 495 requests at each of 8, 32, and 64 concurrent clients. It completed without errors for both workloads. At 64 clients, p99 was 39.6 ms on the public queries and 736.5 ms after removing the receipt-date phrases.
+Across 35 public queries from two mailboxes excluded when comparing ranking weights, nDCG@10 rose from 0.8570 to 0.9843.
+
+The organizers measure final quality and latency on their private benchmark. The local integrated HTTP stress test used 495 requests at each of 8, 32, and 64 concurrent clients. It completed without errors for both workloads. At 64 clients, local HTTP p99 on the public queries was 103.4 ms. The previous load test of the unchanged hybrid path, with the receipt-date phrases removed, measured 736.5 ms.
 
 ## Start the backend
 
@@ -96,7 +99,7 @@ The response contains `count`, `received_on` (the extracted receipt date or `nul
 
 Other routes:
 
-- `GET /health` — service status, indexed document count, and whether dense retrieval and reranking loaded.
+- `GET /health` — service status, indexed document count, and enabled ranking modes.
 - `GET /mailboxes` — available synthetic mailboxes and message counts.
 - `GET /mailboxes/{synthetic_user}/messages?offset=0&limit=50` — inbox page. Use `preview=true` for lightweight inbox previews.
 - `GET /mailboxes/{synthetic_user}/messages/{doc_id}` — full message in the selected mailbox. With an older backend, the frontend retrieves it through the paginated inbox.
@@ -109,7 +112,8 @@ The frontend can call the API directly from a local development server; CORS is 
 Run from `backend/` after installing the backend dependencies:
 
 ```bash
-python evaluate.py --latency-repeats 5
+python evaluate.py --latency-repeats 5 --worst 10
+MAIL_RECEIPT_RERANK=0 python evaluate.py --latency-repeats 5 --worst 10
 MAIL_RECEIPT_DATES=0 python evaluate.py --mode lexical --latency-repeats 5
 ```
 
@@ -152,9 +156,9 @@ The ZIP archive is deliberately not stored in Git. It contains pseudonymized ema
 
 **0:15–0:45. Живой показ.** Откройте самый большой ящик. Поставьте «Поиск до» на 21 ноября 2026 года. Введите «Какие заказы пришли вчера?». Покажите, что приложение само вычислило 20 ноября, и откройте одно из двух писем. Добавьте его в «Избранное» и покажите, как быстро к нему вернуться. Если нужно сэкономить время, нажмите готовый пример «Заказы от 20 ноября 2026».
 
-**0:45–1:05. Как устроен поиск.** «Сначала определяем ящик и дату. Если день указан в запросе, ищем только среди полученных в этот день писем и сортируем по BM25 с русской морфологией. Если точного дня нет, объединяем результаты поиска по словам и поискового индекса на эмбеддингах, а LightGBM уточняет порядок. Обработка выполняется на сервере, прямо на машине с архивом».
+**0:45–1:05. Как устроен поиск.** «Сначала определяем ящик и дату. Если день указан в запросе, ищем только среди полученных в этот день писем и уточняем их порядок по совпадениям в теме и в начале письма. Учитываем родственные формы слов вроде «погрузка» и «погрузить». Если точного дня нет, объединяем результаты поиска по словам и поискового индекса на эмбеддингах, а LightGBM уточняет порядок. Обработка выполняется на сервере, прямо на машине с архивом».
 
-**1:05–1:25. Доказательство.** «На 99 публичных запросах Recall@10 вырос с 52,4% до 88,8%, а nDCG@10 — с 0,367 до 0,930. Recall@100 достиг 99,2%. Эти цифры получили на публичных запросах с датами. Под нагрузкой в 64 клиента локальный p99 составил 40 мс на этих запросах и 737 мс на нагрузке для гибридного режима. Финальный замер проведут организаторы».
+**1:05–1:25. Доказательство.** «На 99 публичных запросах Recall@10 вырос с 88,8% до 93,1%, а nDCG@10 — с 0,930 до 0,989. Recall@100 достиг 100%. Эти цифры получили на публичных запросах с датами. Под нагрузкой в 64 клиента локальный p99 составил 103 мс на этих запросах и 737 мс на нагрузке для гибридного режима. Финальный замер проведут организаторы».
 
 **1:25–1:30. Финал.** «Прототип работает в браузере. На ноутбуке список и письмо видны рядом, на телефоне письмо открывается во весь экран. Для показа есть HTTPS-ссылка и локальная копия».
 

@@ -43,7 +43,6 @@ export function colorIndex(value) {
 const dateFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
 const fullDateFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
 export const number = new Intl.NumberFormat('ru-RU')
-export const relevance = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 })
 
 export function mailDate(value, full = false) {
   const date = value && new Date(value)

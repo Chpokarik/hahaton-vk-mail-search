@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   Archive, Bookmark, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Inbox,
-  LoaderCircle, Mail, MailOpen, Search, Sparkles, X,
+  LoaderCircle, Mail, MailOpen, Search, X,
 } from 'lucide-react'
 import '@fontsource-variable/inter'
 import '@fontsource-variable/manrope'
 import { api } from './api'
-import { colorIndex, initials, mailContent, mailDate, number, preview, relevance } from './mail'
+import { colorIndex, initials, mailContent, mailDate, number, preview } from './mail'
 import { loadSaved, saveLetters, savedSummary } from './saved'
 import './style.css'
 
@@ -57,13 +57,13 @@ function Sidebar({ boxes, active, health, onChange }) {
     ? shown
     : [...shown, ...boxes.filter((box) => box.synthetic_user === active)]
 
-  const connection = { ready: 'API подключён', error: 'API недоступен', loading: 'Подключение к API' }[health.status]
+  const connection = { ready: 'Поиск готов', error: 'Почта недоступна', loading: 'Подключаем почту' }[health.status]
 
   return (
     <aside className="sidebar">
       <div className="brand">
         <div className="brand-mark"><Mail size={22} strokeWidth={2.1} /></div>
-        <span>Почта<span className="brand-accent">.</span></span>
+        <span>Почта</span>
       </div>
       <nav className="accounts" aria-label="Почтовые ящики">
         <div className="side-heading"><span>Ящики</span><span>{boxes.length || ''}</span></div>
@@ -102,7 +102,7 @@ function Sidebar({ boxes, active, health, onChange }) {
         <div>
           <span>{connection}</span>
           {health.status === 'ready' && (
-            <small>{number.format(health.data.documents)} писем в индексе{health.data.semantic_search ? ' · гибридный поиск' : ''}</small>
+            <small>{number.format(health.data.documents)} писем</small>
           )}
           {health.status === 'error' && <button className="text-button" onClick={health.retry}>Перепроверить</button>}
         </div>
@@ -111,7 +111,7 @@ function Sidebar({ boxes, active, health, onChange }) {
   )
 }
 
-function SearchHero({ draft, setDraft, onSearch }) {
+function SearchPanel({ draft, setDraft, onSearch }) {
   const inputRef = useRef(null)
 
   useEffect(() => {
@@ -126,18 +126,16 @@ function SearchHero({ draft, setDraft, onSearch }) {
   }, [])
 
   return (
-    <section className="hero" aria-labelledby="search-heading">
-      <div className="hero-art" aria-hidden="true" />
-      <div className="hero-content">
-        <h1 id="search-heading">Умный поиск<span>.</span></h1>
-        <p>Опишите письмо своими словами. Можно указать дату.</p>
+    <section className="search-panel" aria-labelledby="search-heading">
+      <div className="search-content">
+        <h1 id="search-heading">Поиск по почте</h1>
         <form className="search-form" role="search" onSubmit={(event) => { event.preventDefault(); onSearch(draft) }}>
           <Search size={21} className="search-icon" aria-hidden="true" />
           <input
             ref={inputRef}
             type="search"
             aria-label="Поиск по письмам"
-            placeholder="Какое письмо ищете?"
+            placeholder="Например, какие заказы пришли вчера?"
             maxLength={1000}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -148,7 +146,7 @@ function SearchHero({ draft, setDraft, onSearch }) {
         <div className="suggestions">
           {SUGGESTIONS.map((suggestion) => (
             <button key={suggestion} onClick={() => onSearch(suggestion)}>
-              <Search size={13} /> {suggestion}
+              {suggestion}
             </button>
           ))}
         </div>
@@ -189,7 +187,7 @@ function Reader({ selected, detail, onClose, panelRef, saved, onSave }) {
   if (!selected) {
     return (
       <section className="panel reader reader-empty" aria-label="Просмотр письма">
-        <Notice icon={MailOpen} title="Выберите письмо">Здесь откроется его полный текст.</Notice>
+        <Notice icon={MailOpen} title="Выберите письмо для просмотра" />
       </section>
     )
   }
@@ -213,11 +211,6 @@ function Reader({ selected, detail, onClose, panelRef, saved, onSave }) {
           <Avatar content={content} id={selected.doc_id} large />
           <div><strong>{content.sender}</strong><span>{mailDate((mail || selected).date, true)}</span></div>
         </div>
-        {Number.isFinite(selected.score) && selected.score !== 0 && (
-          <span className="score" title="Балл поискового движка по этому запросу">
-            <Sparkles size={14} /> Балл поиска {relevance.format(selected.score)}
-          </span>
-        )}
         {mail && <div className="letter-text">{content.text || 'Письмо без текста.'}</div>}
         {!mail && detail.status === 'loading' && <Notice icon={LoaderCircle} title="Загружаем письмо" />}
         {!mail && detail.status === 'error' && (
@@ -312,7 +305,7 @@ function Workspace({ mailbox }) {
 
   return (
     <div className={selected ? 'mail-view has-letter' : 'mail-view'}>
-      <SearchHero draft={draft} setDraft={setDraft} onSearch={search} />
+      <SearchPanel draft={draft} setDraft={setDraft} onSearch={search} />
       <div className={`workspace${selected ? ' letter-visible' : ''}`}>
         <section className="panel inbox" aria-labelledby="inbox-heading">
           <div className="inbox-heading">

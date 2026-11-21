@@ -24,6 +24,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 from query_dates import ReceiptQuery, parse_receipt_query
+from receipt_ranking import ReceiptRanker
 
 
 TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
@@ -35,6 +36,7 @@ MAILBOX_LOCAL_IDF = os.environ.get("MAIL_MAILBOX_IDF", "1") != "0"
 SUBJECT_BOOST = float(os.environ.get("MAIL_SUBJECT_BOOST", "0.25"))
 COVERAGE_BOOST = float(os.environ.get("MAIL_COVERAGE_BOOST", "2"))
 USE_RECEIPT_DATES = os.environ.get("MAIL_RECEIPT_DATES", "1") != "0"
+USE_RECEIPT_RERANK = os.environ.get("MAIL_RECEIPT_RERANK", "1") != "0"
 BM25_K1 = float(os.environ.get("MAIL_BM25_K1", "1.5"))
 BM25_B = float(os.environ.get("MAIL_BM25_B", "0.75"))
 SEMANTIC_MODEL = os.environ.get(
@@ -194,6 +196,7 @@ class MailSearch:
         coverage_terms = set(terms) - STOPWORDS
         candidate_ids: set[str] = set()
         mailbox_index = self.mailbox_postings.get(mailbox, {})
+        received_that_day: set[str] = set()
         if receipt.day is None:
             for term in set(terms):
                 candidate_ids.update(mailbox_index.get(term, ()))
@@ -240,8 +243,32 @@ class MailSearch:
             if score or not terms:
                 scored.append((score, doc))
 
+        if USE_RECEIPT_RERANK and received_that_day and terms:
+            ranker = ReceiptRanker(terms, STOPWORDS)
+            if ranker.terms:
+                scored = self._rerank_receipts(scored, received_that_day, ranker)
+
         scored.sort(key=lambda item: (-item[0], item[1]["doc_id"]))
         return [self.result(doc, score) for score, doc in scored[:limit]]
+
+    def _rerank_receipts(
+        self,
+        scored: list[tuple[float, dict[str, Any]]],
+        received: set[str],
+        ranker: ReceiptRanker,
+    ) -> list[tuple[float, dict[str, Any]]]:
+        max_lexical = max((score for score, _ in scored), default=0) or 1
+        lexical_scores = {doc["doc_id"]: score / max_lexical for score, doc in scored}
+        ranked = []
+        for doc_id in received:
+            score = ranker.score(
+                self.token_sequences[doc_id],
+                self.subject_freqs[doc_id],
+                lexical_scores.get(doc_id),
+            )
+            if score is not None:
+                ranked.append((score, self.by_id[doc_id]))
+        return ranked
 
     @staticmethod
     def result(doc: dict[str, Any], score: float) -> dict[str, Any]:
@@ -356,6 +383,7 @@ def health() -> dict[str, Any]:
         "documents": len(search_engine.documents),
         "semantic_search": search_engine.dense_model is not None,
         "reranker": search_engine.ranker is not None,
+        "receipt_reranking": USE_RECEIPT_DATES and USE_RECEIPT_RERANK,
     }
 
 
