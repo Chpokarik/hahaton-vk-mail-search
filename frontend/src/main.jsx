@@ -55,7 +55,7 @@ function Header({ boxes = [], mailbox, onMailbox, showSaved, onInbox, onSaved, h
     <header className="app-header">
       <div className="header-inner">
         <div className="brand">
-          <span className="brand-icon"><Mail aria-hidden="true" size={21} strokeWidth={1.75} /></span>
+          <span className="brand-mark" aria-hidden="true" />
           <span>Почта</span>
         </div>
         {mailbox && (
@@ -99,23 +99,21 @@ function SearchPanel({ draft, setDraft, onSearch, onReveal }) {
 
   return (
     <section className="search-panel" aria-labelledby="search-heading">
-      <div className="hero-image" aria-hidden="true" />
       <div className="search-content">
-        <h1 id="search-heading">Найти письмо<span>.</span></h1>
-        <p>Поиск по почте своими словами</p>
+        <h1 className="sr-only" id="search-heading">Поиск по почте</h1>
         <form className="search-form" role="search" onSubmit={(event) => { event.preventDefault(); onSearch(draft) }}>
           <Search size={21} className="search-icon" aria-hidden="true" />
           <input
             ref={inputRef}
             type="search"
             aria-label="Поиск по письмам"
-            placeholder="Например, заказы за вчера"
+            placeholder="Поиск по письмам"
             maxLength={1000}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
           />
           <kbd aria-hidden="true">{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ K' : 'Ctrl K'}</kbd>
-          <button type="submit" disabled={!draft.trim()}>Найти</button>
+          <button type="submit" disabled={!draft.trim()}>Поиск</button>
         </form>
         <div className="suggestions">
           {SUGGESTIONS.map((suggestion) => (
