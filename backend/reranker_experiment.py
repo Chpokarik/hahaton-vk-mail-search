@@ -19,6 +19,7 @@ import numpy as np
 from fastembed import TextEmbedding
 
 from app import STOPWORDS, search_engine, tokenize
+from search_features import FEATURE_NAMES, candidate_features
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,13 +27,6 @@ ARCHIVE_PATH = Path(os.environ.get("MAIL_DATASET_ZIP", ROOT.parent / "mipt_mail_
 INDEX_PATH = Path(os.environ.get("MAIL_VECTOR_INDEX", Path(__file__).resolve().parent / ".cache" / "semantic-index.npz"))
 MODEL_CACHE_PATH = Path(os.environ.get("MAIL_MODEL_CACHE", Path(__file__).resolve().parent / ".cache" / "fastembed"))
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-FEATURE_NAMES = [
-    "bm25_score", "bm25_rank", "dense_score", "dense_rank", "coverage", "idf_coverage",
-    "subject_coverage", "query_doc_len_ratio", "query_len", "doc_len_log", "subject_len_log",
-    "matched_numeric", "phrase_pair_coverage", "rrf_score",
-]
-
-
 def metrics(ranked: list[str], relevant: set[str]) -> tuple[float, float, float, float]:
     if not relevant:
         return 0.0, 0.0, 0.0, 0.0
@@ -75,11 +69,7 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
         query_id = query["query_id"]
         mailbox = query["synthetic_user"]
         query_day = date.fromisoformat(query["query_date"]) if query.get("query_date") else None
-        terms = tokenize(query["query"])
-        unique_terms = list(dict.fromkeys(terms))
-        coverage_terms = set(unique_terms) - STOPWORDS
-
-        lexical_rows = search_engine.search(query["query"], mailbox, query_day, depth)
+        lexical_rows = search_engine.search_lexical(query["query"], mailbox, query_day, depth)
         lexical_by_id = {row["doc_id"]: row for row in lexical_rows}
         qvec = np.asarray(next(model.query_embed(query["query"])), dtype=np.float32)
         qvec /= max(float(np.linalg.norm(qvec)), 1e-12)
@@ -98,48 +88,22 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
 
         candidate_ids = set(lexical_by_id) | set(dense_order)
         lexical_rank = {docid: rank for rank, docid in enumerate(lexical_by_id, 1)}
-        mailbox_index = search_engine.mailbox_postings.get(mailbox, {})
-        doc_count = max(1, search_engine.mailbox_doc_counts.get(mailbox, 1))
-        query_numbers = {term for term in unique_terms if term.isdigit()}
-        query_pairs = set(zip(unique_terms, unique_terms[1:]))
-
-        # Precompute one token sequence per candidate so phrase adjacency is measured after lemmatization.
-        token_sequences = {docid: tokenize(docs[docid].get("doc", "")) for docid in candidate_ids}
         for docid in sorted(candidate_ids):
             lexical_row = lexical_by_id.get(docid)
-            doc_terms = set(search_engine.term_freqs[docid])
-            subject_terms = set(search_engine.subject_freqs[docid])
-            matched = doc_terms & coverage_terms
-            idf_coverage = sum(
-                math.log(1 + (doc_count - len(mailbox_index.get(term, ())) + 0.5) /
-                         (len(mailbox_index.get(term, ())) + 0.5))
-                for term in matched
-            )
-            sequence = token_sequences[docid]
-            doc_pairs = set(zip(sequence, sequence[1:]))
-            phrase_coverage = len(query_pairs & doc_pairs) / max(1, len(query_pairs))
-            subject_coverage = len(subject_terms & coverage_terms) / max(1, len(coverage_terms))
-            dlen = search_engine.lengths[docid]
-            slen = sum(search_engine.subject_freqs[docid].values())
             brank = lexical_rank.get(docid, 0)
             drank = dense_rank.get(docid, 0)
-            rrf = (1 / (60 + brank) if brank else 0) + (0.1 / (60 + drank) if drank else 0)
-            features = [
-                lexical_row["score"] if lexical_row else 0.0,
-                brank / depth if brank else 2.0,
-                dense_by_doc.get(docid, 0.0),
-                drank / depth if drank else 2.0,
-                len(matched) / max(1, len(coverage_terms)),
-                idf_coverage,
-                subject_coverage,
-                len(terms) / max(1, dlen),
-                len(terms),
-                math.log1p(dlen),
-                math.log1p(slen),
-                len(query_numbers & (doc_terms)),
-                phrase_coverage,
-                rrf,
-            ]
+            features = candidate_features(
+                search_engine,
+                query["query"],
+                docid,
+                lexical_score=lexical_row["score"] if lexical_row else 0.0,
+                lexical_rank=brank,
+                dense_score=dense_by_doc.get(docid, 0.0),
+                dense_rank=drank,
+                depth=depth,
+                tokenizer=tokenize,
+                stopwords=STOPWORDS,
+            )
             examples.append({
                 "query_id": query_id,
                 "mailbox": mailbox,
@@ -152,16 +116,16 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
     return examples, query_meta, qrels
 
 
-def make_ranker() -> lgb.LGBMRanker:
+def make_ranker(estimators: int, leaves: int, max_depth: int, min_child: int, reg_lambda: float) -> lgb.LGBMRanker:
     return lgb.LGBMRanker(
         objective="lambdarank",
         metric="ndcg",
-        n_estimators=250,
+        n_estimators=estimators,
         learning_rate=0.05,
-        num_leaves=15,
-        max_depth=5,
-        min_child_samples=10,
-        reg_lambda=2.0,
+        num_leaves=leaves,
+        max_depth=max_depth,
+        min_child_samples=min_child,
+        reg_lambda=reg_lambda,
         random_state=42,
         n_jobs=4,
         verbosity=-1,
@@ -176,6 +140,13 @@ def report(label: str, rows: list[tuple[float, float, float, float]]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--depth", type=int, default=100, help="lexical and dense candidates per query")
+    parser.add_argument("--save-model", type=Path, help="train on all public queries and save a LightGBM model")
+    parser.add_argument("--estimators", type=int, default=100)
+    parser.add_argument("--leaves", type=int, default=5)
+    parser.add_argument("--max-depth", type=int, default=2)
+    parser.add_argument("--min-child", type=int, default=30)
+    parser.add_argument("--reg-lambda", type=float, default=8.0)
+    parser.add_argument("--split-seed", type=int, default=42)
     args = parser.parse_args()
     examples, query_meta, qrels = build_examples(args.depth)
     by_query: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -185,12 +156,12 @@ def main() -> None:
     all_ids = {meta["query_id"]: meta["candidates"] for meta in query_meta}
     print(f"queries={len(queries)} candidates={len(examples)} positives={sum(x['label'] for x in examples)}")
 
-    def shuffled_folds() -> list[list[str]]:
+    def shuffled_folds(seed: int) -> list[list[str]]:
         ids = queries[:]
-        random.Random(42).shuffle(ids)
+        random.Random(seed).shuffle(ids)
         return [ids[i::5] for i in range(5)]
 
-    folds = shuffled_folds()
+    folds = shuffled_folds(args.split_seed)
     predictions: dict[str, list[tuple[str, float]]] = {}
     feature_rows: dict[str, list[dict[str, Any]]] = {}
     for fold in folds:
@@ -200,7 +171,7 @@ def main() -> None:
         group = [len(by_query[qid]) for qid in train_queries]
         X = np.asarray([row["features"] for row in train_rows], dtype=np.float32)
         y = np.asarray([row["label"] for row in train_rows], dtype=np.int32)
-        ranker = make_ranker()
+        ranker = make_ranker(args.estimators, args.leaves, args.max_depth, args.min_child, args.reg_lambda)
         ranker.fit(X, y, group=group)
         for qid in fold:
             rows = by_query[qid]
@@ -231,7 +202,7 @@ def main() -> None:
         valid_queries = [meta["query_id"] for meta in query_meta if meta["mailbox"] == mailbox]
         train_queries = [qid for qid in queries if qid not in set(valid_queries)]
         train_rows = [row for qid in train_queries for row in by_query[qid]]
-        ranker = make_ranker()
+        ranker = make_ranker(args.estimators, args.leaves, args.max_depth, args.min_child, args.reg_lambda)
         ranker.fit(
             np.asarray([row["features"] for row in train_rows], dtype=np.float32),
             np.asarray([row["label"] for row in train_rows], dtype=np.int32),
@@ -246,6 +217,18 @@ def main() -> None:
         ranked = [docid for docid, _ in sorted(preds, key=lambda item: (-item[1], item[0]))]
         mailbox_rows.append(metrics(ranked, qrels.get(qid, set())))
     report("lambdamart_mailbox_holdout", mailbox_rows)
+
+    if args.save_model:
+        train_rows = [row for qid in queries for row in by_query[qid]]
+        ranker = make_ranker(args.estimators, args.leaves, args.max_depth, args.min_child, args.reg_lambda)
+        ranker.fit(
+            np.asarray([row["features"] for row in train_rows], dtype=np.float32),
+            np.asarray([row["label"] for row in train_rows], dtype=np.int32),
+            group=[len(by_query[qid]) for qid in queries],
+        )
+        args.save_model.parent.mkdir(parents=True, exist_ok=True)
+        ranker.booster_.save_model(str(args.save_model))
+        print(f"saved_model: {args.save_model} ({args.save_model.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

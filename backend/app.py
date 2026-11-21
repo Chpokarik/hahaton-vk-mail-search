@@ -13,6 +13,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+# Dense mail vectors are small enough that one BLAS thread per request avoids
+# oversubscribing the CPU when many searches arrive at once.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", os.environ.get("MAIL_BLAS_THREADS", "1"))
+os.environ.setdefault("OMP_NUM_THREADS", os.environ.get("MAIL_OMP_THREADS", "1"))
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -28,6 +33,11 @@ SUBJECT_BOOST = float(os.environ.get("MAIL_SUBJECT_BOOST", "0.25"))
 COVERAGE_BOOST = float(os.environ.get("MAIL_COVERAGE_BOOST", "2"))
 BM25_K1 = float(os.environ.get("MAIL_BM25_K1", "1.5"))
 BM25_B = float(os.environ.get("MAIL_BM25_B", "0.75"))
+SEMANTIC_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+VECTOR_INDEX_PATH = Path(os.environ.get("MAIL_VECTOR_INDEX", Path(__file__).resolve().parent / ".cache" / "semantic-index.npz"))
+MODEL_CACHE_PATH = Path(os.environ.get("MAIL_MODEL_CACHE", Path(__file__).resolve().parent / ".cache" / "fastembed"))
+RANKER_PATH = Path(os.environ.get("MAIL_RANKER_PATH", Path(__file__).resolve().parent / "ranker_model.txt"))
+SEMANTIC_ENABLED = os.environ.get("MAIL_SEMANTIC_ENABLED", "1") != "0"
 STOPWORDS = {
     "а", "без", "бы", "в", "вам", "вас", "весь", "во", "вот", "все", "всего", "всех", "вы",
     "где", "да", "для", "до", "его", "ее", "если", "есть", "еще", "же", "за", "и", "из",
@@ -76,8 +86,10 @@ class MailSearch:
         self.documents = documents
         self.by_id = {doc["doc_id"]: doc for doc in documents}
         self.lengths: dict[str, int] = {}
+        self.token_sequences: dict[str, tuple[str, ...]] = {}
         self.term_freqs: dict[str, Counter[str]] = {}
         self.subject_freqs: dict[str, Counter[str]] = {}
+        self.mailbox_documents: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.postings: dict[str, set[str]] = defaultdict(set)
         self.mailbox_postings: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
         self.mailbox_doc_counts: Counter[str] = Counter()
@@ -86,7 +98,9 @@ class MailSearch:
             tokens = tokenize(doc.get("doc", ""))
             doc_id = doc["doc_id"]
             mailbox = doc["synthetic_user"]
+            self.mailbox_documents[mailbox].append(doc)
             self.lengths[doc_id] = len(tokens)
+            self.token_sequences[doc_id] = tuple(tokens)
             self.mailbox_doc_counts[mailbox] += 1
             self.mailbox_length_sums[mailbox] += len(tokens)
             freqs = Counter(tokens)
@@ -101,8 +115,50 @@ class MailSearch:
             mailbox: self.mailbox_length_sums[mailbox] / count
             for mailbox, count in self.mailbox_doc_counts.items()
         }
+        self.dense_model: Any = None
+        self.dense_by_mailbox: dict[str, tuple[Any, Any]] = {}
+        self.ranker: Any = None
+        self._load_optional_rerankers()
 
-    def search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
+    def _load_optional_rerankers(self) -> None:
+        if not SEMANTIC_ENABLED or not VECTOR_INDEX_PATH.is_file():
+            return
+        model_snapshot = MODEL_CACHE_PATH / "models--Qdrant--paraphrase-multilingual-MiniLM-L12-v2-onnx-Q" / "snapshots"
+        if not list(model_snapshot.glob("*/model_optimized.onnx")):
+            return
+        try:
+            import numpy as np
+            from fastembed import TextEmbedding
+
+            index = np.load(VECTOR_INDEX_PATH, allow_pickle=False)
+            doc_ids = index["doc_ids"].astype(str, copy=False)
+            vectors = index["vectors"].astype(np.float32, copy=False)
+            if set(doc_ids) != set(self.by_id):
+                print("Dense retrieval disabled: vector index does not match the current corpus")
+                return
+            mailbox_ids = index["mailbox_ids"].astype(str, copy=False)
+            for mailbox in self.mailbox_doc_counts:
+                indices = np.flatnonzero(mailbox_ids == mailbox)
+                self.dense_by_mailbox[mailbox] = (doc_ids[indices], vectors[indices])
+            self.dense_model = TextEmbedding(
+                model_name=SEMANTIC_MODEL,
+                cache_dir=str(MODEL_CACHE_PATH),
+                threads=int(os.environ.get("MAIL_QUERY_EMBED_THREADS", "1")),
+            )
+            if RANKER_PATH.is_file():
+                try:
+                    import lightgbm as lgb
+
+                    self.ranker = lgb.Booster(model_file=str(RANKER_PATH))
+                    print(f"LightGBM reranker active ({RANKER_PATH.name})")
+                except ImportError:
+                    print("Dense retrieval active without the optional LightGBM reranker")
+            print(f"Dense retrieval active ({len(doc_ids)} text chunks)")
+        except Exception as exc:
+            # A missing/corrupt optional cache must not stop the lexical API from starting.
+            print(f"Dense retrieval disabled ({type(exc).__name__})")
+
+    def search_lexical(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
         terms = tokenize(query)
         if not terms:
             return []
@@ -159,6 +215,88 @@ class MailSearch:
             for score, doc in scored[:limit]
         ]
 
+    def _dense_search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> tuple[list[str], dict[str, float]]:
+        if self.dense_model is None:
+            return [], {}
+        import numpy as np
+
+        qvec = np.asarray(next(self.dense_model.query_embed(query)), dtype=np.float32)
+        qvec /= max(float(np.linalg.norm(qvec)), 1e-12)
+        mailbox_data = self.dense_by_mailbox.get(mailbox)
+        if mailbox_data is None:
+            return [], {}
+        doc_ids, vectors = mailbox_data
+        scores = vectors @ qvec
+        best: dict[str, float] = {}
+        for raw_doc_id, score in zip(doc_ids, scores):
+            doc_id = str(raw_doc_id)
+            raw_date = self.by_id[doc_id].get("doc_dt")
+            if as_of is not None and raw_date:
+                try:
+                    if date.fromisoformat(raw_date) > as_of:
+                        continue
+                except ValueError:
+                    pass
+            best[doc_id] = max(best.get(doc_id, -1.0), float(score))
+        ranked = sorted(best, key=lambda doc_id: (-best[doc_id], doc_id))[:limit]
+        return ranked, best
+
+    def search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
+        if self.dense_model is None:
+            return self.search_lexical(query, mailbox, as_of, limit)
+
+        depth = max(100, limit)
+        lexical = self.search_lexical(query, mailbox, as_of, depth)
+        dense_ids, dense_scores = self._dense_search(query, mailbox, as_of, depth)
+        lexical_by_id = {row["doc_id"]: row for row in lexical}
+        lexical_ranks = {row["doc_id"]: rank for rank, row in enumerate(lexical, 1)}
+        dense_ranks = {doc_id: rank for rank, doc_id in enumerate(dense_ids, 1)}
+        candidate_ids = sorted(set(lexical_by_id) | set(dense_ids))
+        if not candidate_ids:
+            return []
+
+        if self.ranker is not None:
+            import numpy as np
+            from search_features import candidate_features
+
+            feature_rows = [
+                candidate_features(
+                    self,
+                    query,
+                    doc_id,
+                    lexical_score=lexical_by_id.get(doc_id, {}).get("score", 0.0),
+                    lexical_rank=lexical_ranks.get(doc_id, 0),
+                    dense_score=dense_scores.get(doc_id, 0.0),
+                    dense_rank=dense_ranks.get(doc_id, 0),
+                    depth=depth,
+                    tokenizer=tokenize,
+                    stopwords=STOPWORDS,
+                )
+                for doc_id in candidate_ids
+            ]
+            scores = self.ranker.predict(
+                np.asarray(feature_rows, dtype=np.float32),
+                num_threads=int(os.environ.get("MAIL_RANKER_THREADS", "1")),
+            )
+            ranked = sorted(zip(candidate_ids, scores), key=lambda item: (-float(item[1]), item[0]))
+        else:
+            fused: dict[str, float] = defaultdict(float)
+            for rank, doc_id in enumerate(lexical_by_id, 1):
+                fused[doc_id] += 1 / (60 + rank)
+            for rank, doc_id in enumerate(dense_ids, 1):
+                fused[doc_id] += 0.1 / (60 + rank)
+            ranked = sorted(fused.items(), key=lambda item: (-item[1], item[0]))
+
+        return [
+            {
+                "doc_id": doc_id,
+                "date": self.by_id[doc_id].get("doc_dt"),
+                "snippet": self.by_id[doc_id].get("doc", "")[:500],
+                "score": round(float(score), 6),
+            }
+            for doc_id, score in ranked[:limit]
+        ]
+
 
 app = FastAPI(title="VK Mail Search", version="0.1.0")
 search_engine = MailSearch(read_documents())
@@ -179,7 +317,12 @@ class SearchRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "documents": len(search_engine.documents)}
+    return {
+        "status": "ok",
+        "documents": len(search_engine.documents),
+        "semantic_search": search_engine.dense_model is not None,
+        "reranker": search_engine.ranker is not None,
+    }
 
 
 @app.get("/mailboxes")
@@ -211,7 +354,7 @@ def messages(
 
 @app.post("/search")
 def search(request: SearchRequest) -> dict[str, Any]:
-    if not any(doc["synthetic_user"] == request.synthetic_user for doc in search_engine.documents):
+    if request.synthetic_user not in search_engine.mailbox_doc_counts:
         raise HTTPException(status_code=404, detail="Unknown mailbox")
     results = search_engine.search(
         request.query, request.synthetic_user, request.query_date, request.limit

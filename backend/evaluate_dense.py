@@ -86,7 +86,7 @@ def main() -> None:
         semantic_rankings.append(dense[:100])
         query_latencies.append(time.perf_counter() - started)
 
-        lexical = search_engine.search(
+        lexical = search_engine.search_lexical(
             query["query"], query["synthetic_user"], query_day, 100
         )
         lexical_rankings.append([row["doc_id"] for row in lexical])
