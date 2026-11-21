@@ -6,9 +6,9 @@ Hackathon prototype for finding a letter in a mailbox from a natural-language re
 
 The live `/search` endpoint always has a local BM25 engine with Russian lemmatization (`pymorphy3`), mailbox-specific document statistics, a subject boost, and a query-term coverage boost. If the ignored local vector index and model cache exist, it also uses local multilingual embeddings and the included LightGBM reranker. No search request is sent to an inference API. Without the vector cache, the endpoint falls back to BM25. The API contract below remains stable while retrieval experiments continue.
 
-The public development set has 99 queries and 565 relevance labels. The improved lexical configuration gets about `Recall@10=0.52`, `Recall@100=0.86`, `nDCG@10=0.37`, and `MRR@10=0.36`. With Potion multilingual embeddings and the regularized LightGBM reranker, three five-fold query-held-out splits average `Recall@10=0.57`, `nDCG@10=0.47`, and `MRR@10=0.48`. Holding out whole mailboxes gives `Recall@10=0.54`, `nDCG@10=0.46`, and `MRR@10=0.46`. These are development signals, not a promise about the hidden benchmark.
+The public development set has 99 queries and 565 relevance labels. The improved lexical configuration gets about `Recall@10=0.52`, `Recall@100=0.86`, `nDCG@10=0.37`, and `MRR@10=0.36`. With Potion multilingual embeddings, 150 candidates per retrieval path, and the regularized LightGBM reranker, three five-fold query-held-out splits average `Recall@10=0.57`, `Recall@100=0.86`, `nDCG@10=0.48`, and `MRR@10=0.48`. Holding out whole mailboxes gives `Recall@10=0.55`, `Recall@100=0.84`, `nDCG@10=0.47`, and `MRR@10=0.47`. These are development signals, not a promise about the hidden benchmark.
 
-On the local hackathon machine, the HTTP stress run completed 495 requests at each concurrency level with zero errors. p99 latency was 304 ms at 8 workers, 300 ms at 16, 368 ms at 32, and 740 ms at 64. This is one development machine/run; repeat on the target deployment hardware.
+On the local hackathon machine, the HTTP stress run completed 495 requests at each concurrency level with zero errors. p99 latency was 335 ms at 8 workers, 312 ms at 16, 415 ms at 32, and 756 ms at 64. This is one development machine/run; repeat on the target deployment hardware.
 
 ## Start the backend
 
@@ -78,7 +78,7 @@ MAIL_LEMMATIZE=1 MAIL_MAILBOX_IDF=1 MAIL_SUBJECT_BOOST=0.25 MAIL_COVERAGE_BOOST=
 
 The reranker experiment uses five-fold query-held-out and mailbox-held-out evaluation. To retrain a model from the full public set, pass `--save-model ranker_model.txt`; evaluate the held-out metrics before replacing the tracked model.
 
-The default embedding model is `minishlab/potion-multilingual-128M`. You can override it with `MAIL_EMBEDDING_MODEL`; rebuild the vector index and ranker together when changing models.
+The default embedding model is `minishlab/potion-multilingual-128M`, and the search endpoint retrieves 150 lexical and 150 dense candidates by default. You can override these settings with `MAIL_EMBEDDING_MODEL` and `MAIL_CANDIDATE_DEPTH`; rebuild the vector index and ranker together when changing the embedding model or candidate depth.
 
 ## Dataset
 

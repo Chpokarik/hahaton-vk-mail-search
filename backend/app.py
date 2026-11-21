@@ -39,6 +39,7 @@ SEMANTIC_MODEL = os.environ.get(
 VECTOR_INDEX_PATH = Path(os.environ.get("MAIL_VECTOR_INDEX", Path(__file__).resolve().parent / ".cache" / "semantic-index.npz"))
 MODEL_CACHE_PATH = Path(os.environ.get("MAIL_MODEL_CACHE", Path(__file__).resolve().parent / ".cache" / "fastembed"))
 RANKER_PATH = Path(os.environ.get("MAIL_RANKER_PATH", Path(__file__).resolve().parent / "ranker_model.txt"))
+CANDIDATE_DEPTH = int(os.environ.get("MAIL_CANDIDATE_DEPTH", "150"))
 SEMANTIC_ENABLED = os.environ.get("MAIL_SEMANTIC_ENABLED", "1") != "0"
 STOPWORDS = {
     "а", "без", "бы", "в", "вам", "вас", "весь", "во", "вот", "все", "всего", "всех", "вы",
@@ -248,7 +249,7 @@ class MailSearch:
         if self.dense_model is None:
             return self.search_lexical(query, mailbox, as_of, limit)
 
-        depth = max(100, limit)
+        depth = max(CANDIDATE_DEPTH, limit)
         lexical = self.search_lexical(query, mailbox, as_of, depth)
         dense_ids, dense_scores = self._dense_search(query, mailbox, as_of, depth)
         lexical_by_id = {row["doc_id"]: row for row in lexical}
