@@ -19,7 +19,7 @@ import numpy as np
 from fastembed import TextEmbedding
 
 from app import STOPWORDS, search_engine, tokenize
-from search_features import FEATURE_NAMES, candidate_features
+from search_features import FEATURE_NAMES, CandidateFeatures
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,27 +89,23 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
 
         candidate_ids = set(lexical_by_id) | set(dense_order)
         lexical_rank = {docid: rank for rank, docid in enumerate(lexical_by_id, 1)}
+        features = CandidateFeatures(search_engine, mailbox, tokenize(query["query"]), STOPWORDS, depth)
         for docid in sorted(candidate_ids):
             lexical_row = lexical_by_id.get(docid)
             brank = lexical_rank.get(docid, 0)
             drank = dense_rank.get(docid, 0)
-            features = candidate_features(
-                search_engine,
-                query["query"],
+            feature_row = features.for_document(
                 docid,
                 lexical_score=lexical_row["score"] if lexical_row else 0.0,
                 lexical_rank=brank,
                 dense_score=dense_by_doc.get(docid, 0.0),
                 dense_rank=drank,
-                depth=depth,
-                tokenizer=tokenize,
-                stopwords=STOPWORDS,
             )
             examples.append({
                 "query_id": query_id,
                 "mailbox": mailbox,
                 "doc_id": docid,
-                "features": features,
+                "features": feature_row,
                 "label": int(docid in qrels.get(query_id, set())),
             })
         query_meta.append({"query_id": query_id, "mailbox": mailbox, "candidates": sorted(candidate_ids)})
@@ -142,9 +138,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--depth", type=int, default=150, help="lexical and dense candidates per query")
     parser.add_argument("--save-model", type=Path, help="train on all public queries and save a LightGBM model")
-    parser.add_argument("--estimators", type=int, default=100)
+    parser.add_argument("--estimators", type=int, default=150)
     parser.add_argument("--leaves", type=int, default=5)
-    parser.add_argument("--max-depth", type=int, default=2)
+    parser.add_argument("--max-depth", type=int, default=3)
     parser.add_argument("--min-child", type=int, default=30)
     parser.add_argument("--reg-lambda", type=float, default=8.0)
     parser.add_argument("--split-seed", type=int, default=42)

@@ -1,6 +1,9 @@
 # VK Mail Search
 
-Hackathon prototype for finding a letter in a mailbox from a natural-language request. [Сценарий защиты](#сценарий-защиты).
+Hackathon prototype for finding a letter in a mailbox from a natural-language request.
+
+- [Как всё работает](docs/architecture.md)
+- [Сценарий выступления и ответы жюри](docs/presentation.md)
 
 ## Run the web demo
 
@@ -53,7 +56,7 @@ Use the HTTPS URL printed by SSH. Keep the tunnel and Uvicorn running during the
 
 ## Current backend
 
-The search engine extracts one receipt day from dates such as «20 ноября 2026», «20.11.2026», ISO dates, and relative dates such as «вчера». It intersects the selected mailbox's term index with that day's index, then ranks candidates with BM25 and Russian lemmatization. Within the selected day, the final score favors topic words in the subject or early in the message and rewards words that appear close together. A shared six-letter prefix for long Russian lemmas can connect forms such as «погрузка» and «погрузить». Without a recognized receipt day, the API retrieves up to 150 candidates each from BM25 and local 128M Potion embeddings. It combines the candidates and reranks them with LightGBM. If the model or index is unavailable, search uses BM25. Query processing and inference run locally.
+The search engine extracts one receipt day from dates such as «20 ноября 2026», «20.11.2026», ISO dates, and relative dates such as «вчера». It intersects the selected mailbox's term index with that day's index, then ranks candidates with BM25 and Russian lemmatization. Within the selected day, the final score favors topic words in the subject or early in the message and rewards words that appear close together. A shared six-letter prefix for long Russian lemmas can connect forms such as «погрузка» and «погрузить». Without a recognized receipt day, the API retrieves up to 150 candidates each from BM25 and local 128M Potion embeddings. It combines the candidates and reranks them with the updated LightGBM model from `search-hybrid`. If the model or index is unavailable, search uses BM25. Query processing and inference run locally.
 
 The public development set contains 99 queries and 565 relevance labels. All rows use the same public queries.
 
@@ -65,7 +68,7 @@ The public development set contains 99 queries and 565 relevance labels. All row
 
 Across 35 public queries from two mailboxes excluded when comparing ranking weights, nDCG@10 rose from 0.8570 to 0.9843.
 
-The organizers measure final quality and latency on their private benchmark. The local integrated HTTP stress test used 495 requests at each of 8, 32, and 64 concurrent clients. It completed without errors for both workloads. At 64 clients, local HTTP p99 on the public queries was 103.4 ms. The previous load test of the unchanged hybrid path, with the receipt-date phrases removed, measured 736.5 ms.
+The organizers measure final quality and latency on their private benchmark. Local HTTP stress tests used 495 requests per run and 64 concurrent clients. With the updated model fixed for both versions, two runs on public queries with the receipt-day phrases removed gave a hybrid-path p99 of 717–792 ms before the optimization and 491–495 ms afterward. The complete API responses matched across 198 comparison queries. The public receipt-day workload had p99 of 97–319 ms across two runs on the integrated build. See [measurement details](docs/architecture.md#6-как-оцениваем).
 
 ## Start the backend
 
@@ -158,7 +161,7 @@ The ZIP archive is deliberately not stored in Git. It contains pseudonymized ema
 
 **0:45–1:05. Как устроен поиск.** «Сначала определяем ящик и дату. Если день указан в запросе, ищем только среди полученных в этот день писем и уточняем их порядок по совпадениям в теме и в начале письма. Учитываем родственные формы слов вроде «погрузка» и «погрузить». Если точного дня нет, объединяем результаты поиска по словам и поискового индекса на эмбеддингах, а LightGBM уточняет порядок. Обработка выполняется на сервере, прямо на машине с архивом».
 
-**1:05–1:25. Доказательство.** «На 99 публичных запросах Recall@10 вырос с 88,8% до 93,1%, а nDCG@10 — с 0,930 до 0,989. Recall@100 достиг 100%. Эти цифры получили на публичных запросах с датами. Под нагрузкой в 64 клиента локальный p99 составил 103 мс на этих запросах и 737 мс на нагрузке для гибридного режима. Финальный замер проведут организаторы».
+**1:05–1:25. Доказательство.** «На 99 публичных запросах Recall@10 вырос с 88,8% до 93,1%, а nDCG@10 — с 0,930 до 0,989. Recall@100 достиг 100%. Эти цифры получили на публичных запросах с датами. Под нагрузкой в 64 клиента локальный p99 составил 97–319 мс на этих запросах и 491–495 мс на нагрузке для гибридного режима. Финальный замер проведут организаторы».
 
 **1:25–1:30. Финал.** «Прототип работает в браузере. На ноутбуке список и письмо видны рядом, на телефоне письмо открывается во весь экран. Для показа есть HTTPS-ссылка и локальная копия».
 

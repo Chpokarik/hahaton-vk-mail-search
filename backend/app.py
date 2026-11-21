@@ -8,6 +8,7 @@ import os
 import re
 import zipfile
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -90,6 +91,14 @@ def read_documents() -> list[dict[str, Any]]:
             return [json.loads(line) for line in stream]
 
 
+@dataclass(frozen=True)
+class DenseMailbox:
+    doc_ids: Any
+    vectors: Any
+    chunk_to_doc: Any
+    receipt_ordinals: Any
+
+
 class MailSearch:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self.documents = documents
@@ -139,7 +148,7 @@ class MailSearch:
         }
 
         self.dense_model: Any = None
-        self.dense_by_mailbox: dict[str, tuple[Any, Any]] = {}
+        self.dense_by_mailbox: dict[str, DenseMailbox] = {}
         self.ranker: Any = None
         self._load_optional_rerankers()
 
@@ -159,13 +168,33 @@ class MailSearch:
                 doc_ids = index["doc_ids"].astype(str, copy=False)
                 vectors = index["vectors"].astype(np.float32, copy=False)
                 mailbox_ids = index["mailbox_ids"].astype(str, copy=False)
-            if set(doc_ids) != set(self.by_id):
+            if (
+                vectors.ndim != 2
+                or vectors.shape[0] != len(doc_ids)
+                or mailbox_ids.shape != doc_ids.shape
+                or set(doc_ids) != set(self.by_id)
+            ):
                 print("Dense retrieval disabled: vector index does not match the current corpus")
                 return
+            if any(self.by_id[doc_id]["synthetic_user"] != mailbox for doc_id, mailbox in zip(doc_ids, mailbox_ids)):
+                print("Dense retrieval disabled: vector index mailbox assignments do not match the corpus")
+                return
+
+            ordinals = {doc_id: day.toordinal() for doc_id, day in self.receipt_dates.items()}
             for mailbox in self.mailbox_doc_counts:
                 indices = np.flatnonzero(mailbox_ids == mailbox)
-                self.dense_by_mailbox[mailbox] = (doc_ids[indices], vectors[indices])
-            embedding_args = {"model_name": SEMANTIC_MODEL, "cache_dir": str(MODEL_CACHE_PATH)}
+                unique_ids, chunk_to_doc = np.unique(doc_ids[indices], return_inverse=True)
+                self.dense_by_mailbox[mailbox] = DenseMailbox(
+                    doc_ids=unique_ids,
+                    vectors=vectors[indices],
+                    chunk_to_doc=chunk_to_doc,
+                    receipt_ordinals=np.asarray([ordinals.get(doc_id, 0) for doc_id in unique_ids]),
+                )
+            embedding_args = {
+                "model_name": SEMANTIC_MODEL,
+                "cache_dir": str(MODEL_CACHE_PATH),
+                "local_files_only": True,
+            }
             if not SEMANTIC_MODEL.startswith("minishlab/potion-"):
                 embedding_args["threads"] = int(os.environ.get("MAIL_QUERY_EMBED_THREADS", "1"))
             self.dense_model = TextEmbedding(**embedding_args)
@@ -287,26 +316,26 @@ class MailSearch:
         return parse_receipt_query(query, as_of) if USE_RECEIPT_DATES else ReceiptQuery(query)
 
     def _dense_search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> tuple[list[str], dict[str, float]]:
-        if self.dense_model is None:
+        mailbox_index = self.dense_by_mailbox.get(mailbox)
+        if self.dense_model is None or mailbox_index is None:
             return [], {}
         import numpy as np
 
         qvec = np.asarray(next(self.dense_model.query_embed(query)), dtype=np.float32)
         qvec /= max(float(np.linalg.norm(qvec)), 1e-12)
-        mailbox_data = self.dense_by_mailbox.get(mailbox)
-        if mailbox_data is None:
-            return [], {}
-        doc_ids, vectors = mailbox_data
-        scores = vectors @ qvec
-        best: dict[str, float] = {}
-        for raw_doc_id, score in zip(doc_ids, scores):
-            doc_id = str(raw_doc_id)
-            doc_date = self.receipt_dates.get(doc_id)
-            if as_of is not None and doc_date is not None and doc_date > as_of:
-                continue
-            best[doc_id] = max(best.get(doc_id, -1.0), float(score))
-        ranked = sorted(best, key=lambda doc_id: (-best[doc_id], doc_id))[:limit]
-        return ranked, best
+        chunk_scores = mailbox_index.vectors @ qvec
+        best = np.full(len(mailbox_index.doc_ids), -1.0, dtype=np.float32)
+        np.maximum.at(best, mailbox_index.chunk_to_doc, chunk_scores)
+
+        doc_ids = mailbox_index.doc_ids
+        if as_of is not None:
+            available = mailbox_index.receipt_ordinals <= as_of.toordinal()
+            best = best[available]
+            doc_ids = doc_ids[available]
+
+        # Doc IDs are already sorted, so stable score ordering preserves the tie-break.
+        ranked = np.argsort(-best, kind="stable")[:limit]
+        return doc_ids[ranked].tolist(), dict(zip(doc_ids.tolist(), best.tolist()))
 
     def search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
         if self.dense_model is None or self.parse_query(query, as_of).day is not None:
@@ -326,20 +355,16 @@ class MailSearch:
 
         if self.ranker is not None:
             import numpy as np
-            from search_features import candidate_features
+            from search_features import CandidateFeatures
 
+            features = CandidateFeatures(self, mailbox, tokenize(query), STOPWORDS, depth)
             feature_rows = [
-                candidate_features(
-                    self,
-                    query,
+                features.for_document(
                     doc_id,
                     lexical_score=lexical_by_id.get(doc_id, {}).get("score", 0.0),
                     lexical_rank=lexical_ranks.get(doc_id, 0),
                     dense_score=dense_scores.get(doc_id, 0.0),
                     dense_rank=dense_ranks.get(doc_id, 0),
-                    depth=depth,
-                    tokenizer=tokenize,
-                    stopwords=STOPWORDS,
                 )
                 for doc_id in candidate_ids
             ]
@@ -357,6 +382,7 @@ class MailSearch:
             ranked = sorted(fused.items(), key=lambda item: (-item[1], item[0]))
 
         return [self.result(self.by_id[doc_id], float(score)) for doc_id, score in ranked[:limit]]
+
 
 app = FastAPI(title="VK Mail Search", version="0.1.0")
 search_engine = MailSearch(read_documents())
