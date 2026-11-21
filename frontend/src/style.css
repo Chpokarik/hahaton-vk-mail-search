@@ -470,6 +470,7 @@ body { background:#f5f6f8; }
 .mailbox-option-details strong { font-size:.78rem; font-weight:680; }.mailbox-option-details small { color:#8a92a1; font-size:.69rem; }
 .mailbox-option-check { margin-left:auto; color:#0878f9; }
 .sidebar-brand { display:flex !important; visibility:visible; align-items:center; gap:10px; min-height:36px; margin:0 8px 26px; color:#252b39; font-size:1.16rem; font-weight:790; letter-spacing:-.04em; }
+.demo-banner { margin: -14px 0 14px; padding: 7px 9px; border: 1px solid #d8eaff; border-radius: 8px; color: #2766a3; background: #f1f8ff; font-size: .71rem; line-height: 1.4; }
 .sidebar-brand .brand-icon { display:grid; place-items:center; width:36px; height:36px; color:#fff; background:linear-gradient(145deg,#2196ff,#0068ed); border-radius:12px; }
 .vk-brand { margin-left:-6px; color:#1685f8; font-size:.8rem; font-weight:800; letter-spacing:-.08em; }
 .sidebar-account { position:relative; display:flex; align-items:center; gap:10px; width:100%; min-height:58px; margin:0; padding:8px 9px; border:1px solid #e8eaf0; border-radius:12px; background:#fff; cursor:pointer; }

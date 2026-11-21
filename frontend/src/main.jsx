@@ -14,6 +14,7 @@ import './style.css'
 const DEFAULT_PAGE_SIZE = 20
 const PAGE_SIZES = [20, 50, 100]
 const SEARCH_LIMIT = 50
+const SYNTHETIC_DEMO = import.meta.env.VITE_DEMO_MODE === 'synthetic'
 
 function useRequest(load) {
   const [state, setState] = useState(null)
@@ -224,6 +225,7 @@ function Sidebar({ mailbox, boxes, onMailbox, folder, setFolder, folderCounts })
         <span className="brand-icon"><Mail aria-hidden="true" size={20} strokeWidth={1.8} /></span>
         <span>Почта</span><span className="vk-brand">vk</span>
       </div>
+      {SYNTHETIC_DEMO && <p className="demo-banner">Демо: здесь синтетические письма</p>}
       <div className="mailbox-switcher" ref={switcherRef}>
         <button
           ref={switcherButton}
