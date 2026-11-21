@@ -26,6 +26,8 @@ export const api = {
   mailboxes: (signal) => request('/mailboxes', { signal }),
   inbox: (mailbox, offset, limit, signal) =>
     request(`${mailboxPath(mailbox)}?offset=${offset}&limit=${limit}`, { signal }),
+  inboxPreview: (mailbox, offset, limit, signal) =>
+    request(`${mailboxPath(mailbox)}?offset=${offset}&limit=${limit}&preview=true`, { signal }),
   search: (mailbox, query, date, limit, signal) => request('/search', {
     signal,
     body: { synthetic_user: mailbox, query, query_date: date || null, limit },

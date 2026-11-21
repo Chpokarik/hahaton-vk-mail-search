@@ -18,7 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARCHIVE = ROOT.parent / "mipt_mail_search_participants.zip"
 DEFAULT_OUTPUT = Path(__file__).resolve().parent / ".cache" / "semantic-index.npz"
 DEFAULT_MODEL_CACHE = Path(__file__).resolve().parent / ".cache" / "fastembed"
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+MODEL_NAME = os.environ.get(
+    "MAIL_EMBEDDING_MODEL", "minishlab/potion-multilingual-128M"
+)
 WORD_RE = re.compile(r"\S+")
 CHUNK_WORDS = 80
 CHUNK_OVERLAP = 16
@@ -58,11 +60,10 @@ def main() -> None:
             mailbox_ids.append(doc["synthetic_user"])
             texts.append(chunk)
 
-    model = TextEmbedding(
-        model_name=MODEL_NAME,
-        cache_dir=str(model_cache),
-        threads=int(os.environ.get("MAIL_EMBED_THREADS", "4")),
-    )
+    embedding_args = {"model_name": MODEL_NAME, "cache_dir": str(model_cache)}
+    if not MODEL_NAME.startswith("minishlab/potion-"):
+        embedding_args["threads"] = int(os.environ.get("MAIL_EMBED_THREADS", "4"))
+    model = TextEmbedding(**embedding_args)
     vectors = np.asarray(list(model.embed(texts, batch_size=128)), dtype=np.float32)
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     vectors /= np.maximum(norms, 1e-12)

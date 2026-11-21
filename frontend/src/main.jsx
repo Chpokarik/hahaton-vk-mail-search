@@ -13,7 +13,7 @@ import './style.css'
 
 const PAGE_SIZE = 20
 const SEARCH_LIMIT = 50
-const SUGGESTIONS = ['Покупатель хочет вернуть товар', 'Счёт на оплату', 'Заказы от 20 ноября 2026']
+const SUGGESTIONS = ['Заказы от 20 ноября 2026', 'Счёт на оплату', 'Покупатель хочет вернуть товар']
 const IDLE = { status: 'idle' }
 const LOADING = { status: 'loading' }
 
@@ -101,7 +101,9 @@ function Sidebar({ boxes, active, health, onChange }) {
         <span className={`connection-dot ${health.status}`} />
         <div>
           <span>{connection}</span>
-          {health.status === 'ready' && <small>{number.format(health.data.documents)} писем в индексе</small>}
+          {health.status === 'ready' && (
+            <small>{number.format(health.data.documents)} писем в индексе{health.data.semantic_search ? ' · гибридный поиск' : ''}</small>
+          )}
           {health.status === 'error' && <button className="text-button" onClick={health.retry}>Перепроверить</button>}
         </div>
       </div>
@@ -125,15 +127,10 @@ function SearchHero({ draft, setDraft, onSearch }) {
 
   return (
     <section className="hero" aria-labelledby="search-heading">
-      <div className="orbit-art" aria-hidden="true">
-        <div className="orbit orbit-outer" /><div className="orbit orbit-middle" /><div className="orbit orbit-inner" />
-        <div className="orbit-envelope"><Mail size={53} strokeWidth={1.25} /></div>
-        <span className="orbit-sparkle"><Sparkles size={32} strokeWidth={1.5} /></span>
-        <span className="orbit-point point-one" /><span className="orbit-point point-two" />
-      </div>
+      <div className="hero-art" aria-hidden="true" />
       <div className="hero-content">
         <h1 id="search-heading">Умный поиск<span>.</span></h1>
-        <p>Опишите письмо своими словами.</p>
+        <p>Опишите письмо своими словами. Можно указать дату.</p>
         <form className="search-form" role="search" onSubmit={(event) => { event.preventDefault(); onSearch(draft) }}>
           <Search size={21} className="search-icon" aria-hidden="true" />
           <input
@@ -216,9 +213,9 @@ function Reader({ selected, detail, onClose, panelRef, saved, onSave }) {
           <Avatar content={content} id={selected.doc_id} large />
           <div><strong>{content.sender}</strong><span>{mailDate((mail || selected).date, true)}</span></div>
         </div>
-        {selected.score > 0 && (
+        {Number.isFinite(selected.score) && selected.score !== 0 && (
           <span className="score" title="Балл поискового движка по этому запросу">
-            <Sparkles size={14} /> Релевантность {relevance.format(selected.score)}
+            <Sparkles size={14} /> Балл поиска {relevance.format(selected.score)}
           </span>
         )}
         {mail && <div className="letter-text">{content.text || 'Письмо без текста.'}</div>}
@@ -250,13 +247,13 @@ function Workspace({ mailbox }) {
   const searchDate = query ? date : ''
   const loadRows = useCallback((signal) => query
     ? api.search(id, query, searchDate, SEARCH_LIMIT, signal)
-    : api.inbox(id, offset, PAGE_SIZE, signal), [id, query, searchDate, offset])
+    : api.inboxPreview(id, offset, PAGE_SIZE, signal), [id, query, searchDate, offset])
   const rows = useRequest(showSaved ? null : loadRows)
   const loadDetail = useCallback((signal) => api.message(id, selected.doc_id, signal), [id, selected])
   const detail = useRequest(selected && typeof selected.text !== 'string' ? loadDetail : null)
 
   useEffect(() => {
-    if (selected && window.matchMedia('(max-width: 1050px)').matches) panelRef.current?.focus()
+    if (selected && window.matchMedia('(max-width: 1070px)').matches) panelRef.current?.focus()
   }, [selected])
 
   function changePage(nextOffset) {
@@ -282,10 +279,19 @@ function Workspace({ mailbox }) {
     changePage(0)
   }
 
-  function closeLetter() {
+  const closeLetter = useCallback(() => {
     setSelected(null)
     requestAnimationFrame(() => openButton.current?.focus({ preventScroll: true }))
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!selected) return
+    function handleClose(event) {
+      if (event.key === 'Escape' && !event.defaultPrevented && !event.target.matches?.('input, select')) closeLetter()
+    }
+    window.addEventListener('keydown', handleClose)
+    return () => window.removeEventListener('keydown', handleClose)
+  }, [selected, closeLetter])
 
   function toggleSaved(letter) {
     const nextSaved = saved.some((item) => item.doc_id === letter.doc_id)
@@ -305,7 +311,7 @@ function Workspace({ mailbox }) {
   const visibleCount = showSaved ? saved.length : query ? count : total
 
   return (
-    <>
+    <div className={selected ? 'mail-view has-letter' : 'mail-view'}>
       <SearchHero draft={draft} setDraft={setDraft} onSearch={search} />
       <div className={`workspace${selected ? ' letter-visible' : ''}`}>
         <section className="panel inbox" aria-labelledby="inbox-heading">
@@ -389,7 +395,7 @@ function Workspace({ mailbox }) {
           onSave={toggleSaved}
         />
       </div>
-    </>
+    </div>
   )
 }
 
@@ -402,8 +408,9 @@ function App() {
 
   return (
     <div className="app">
+      <a className="skip-link" href="#mail-main">К почте</a>
       <Sidebar boxes={boxes} active={current?.synthetic_user || ''} health={health} onChange={setActive} />
-      <main className="main">
+      <main className="main" id="mail-main">
         {current ? <Workspace key={current.synthetic_user} mailbox={current} /> : (
           <section className="panel service-state" aria-label="Состояние почты">
             {mailboxes.status === 'loading' && <Notice icon={LoaderCircle} title="Подключаемся к почте" />}

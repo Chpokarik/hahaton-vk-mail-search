@@ -43,7 +43,7 @@ def load_benchmark(path: Path) -> tuple[list[dict[str, Any]], dict[str, set[str]
     return queries, qrels
 
 
-def evaluate(limit: int, repeats: int) -> dict[str, float | int]:
+def evaluate(limit: int, repeats: int, mode: str) -> dict[str, float | int | str]:
     archive_path = Path(os.environ.get("MAIL_DATASET_ZIP", DEFAULT_ARCHIVE))
     queries, qrels = load_benchmark(archive_path)
     per_query: list[tuple[float, float, float, float]] = []
@@ -54,7 +54,8 @@ def evaluate(limit: int, repeats: int) -> dict[str, float | int]:
         as_of = query.get("query_date")
 
         started = time.perf_counter()
-        results = search_engine.search(
+        search_method = search_engine.search_lexical if mode == "lexical" else search_engine.search
+        results = search_method(
             query["query"],
             query["synthetic_user"],
             date.fromisoformat(as_of) if as_of else None,
@@ -76,7 +77,7 @@ def evaluate(limit: int, repeats: int) -> dict[str, float | int]:
         # Repeat a warmed query to collect a more stable in-process latency sample.
         for _ in range(max(0, repeats - 1)):
             started = time.perf_counter()
-            search_engine.search(
+            search_method(
                 query["query"],
                 query["synthetic_user"],
                 date.fromisoformat(as_of) if as_of else None,
@@ -86,6 +87,7 @@ def evaluate(limit: int, repeats: int) -> dict[str, float | int]:
 
     mean = lambda column: statistics.fmean(row[column] for row in per_query)
     return {
+        "mode": mode,
         "queries": len(queries),
         "qrels": sum(map(len, qrels.values())),
         "Recall@10": mean(0),
@@ -104,9 +106,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=100, help="maximum candidates returned per query")
     parser.add_argument("--latency-repeats", type=int, default=5, help="warm in-process runs per query")
+    parser.add_argument("--mode", choices=("active", "lexical"), default="active")
     args = parser.parse_args()
-    for key, value in evaluate(args.limit, args.latency_repeats).items():
+    for key, value in evaluate(args.limit, args.latency_repeats, args.mode).items():
         print(f"{key}: {value:.4f}" if isinstance(value, float) else f"{key}: {value}")
+    if args.mode == "active" and search_engine.ranker is not None:
+        print("note: the included reranker is trained on public qrels; use reranker_experiment.py for held-out metrics")
 
 
 if __name__ == "__main__":
