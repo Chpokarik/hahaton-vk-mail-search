@@ -13,8 +13,6 @@ import './style.css'
 const PAGE_SIZE = 20
 const SEARCH_LIMIT = 50
 const SUGGESTIONS = ['Заказы от 20 ноября 2026', 'Счёт на оплату', 'Покупатель хочет вернуть товар']
-const IDLE = { status: 'idle' }
-const LOADING = { status: 'loading' }
 
 function useRequest(load) {
   const [state, setState] = useState(null)
@@ -34,14 +32,16 @@ function useRequest(load) {
     return () => controller.abort()
   }, [load, attempt])
 
-  const current = !load ? IDLE : state?.load === load && state.attempt === attempt ? state : LOADING
+  const current = !load
+    ? { status: 'idle' }
+    : state?.load === load && state.attempt === attempt ? state : { status: 'loading' }
   return { ...current, retry: () => retry((previous) => previous + 1) }
 }
 
 function Notice({ icon: Icon = Inbox, title, children, action, actionText }) {
   return (
     <div className="notice" role="status">
-      <span className="notice-icon"><Icon size={24} strokeWidth={1.7} /></span>
+      <span className="notice-icon"><Icon size={23} strokeWidth={1.65} /></span>
       <strong>{title}</strong>
       {children && <p>{children}</p>}
       {action && <button className="text-button" onClick={action}>{actionText}</button>}
@@ -49,46 +49,37 @@ function Notice({ icon: Icon = Inbox, title, children, action, actionText }) {
   )
 }
 
-function Sidebar({ boxes, active, onChange }) {
+function Header({ boxes = [], mailbox, onMailbox, showSaved, onInbox, onSaved, hasQuery }) {
+  const index = boxes.indexOf(mailbox)
   return (
-    <aside className="sidebar">
-      <div className="brand">
-        <Mail aria-hidden="true" size={24} strokeWidth={1.6} />
-        <span>Почта</span>
+    <header className="app-header">
+      <div className="header-inner">
+        <div className="brand">
+          <span className="brand-icon"><Mail aria-hidden="true" size={21} strokeWidth={1.75} /></span>
+          <span>Почта</span>
+        </div>
+        {mailbox && (
+          <>
+            <nav className="site-nav" aria-label="Разделы почты">
+              <button type="button" aria-current={!showSaved ? 'page' : undefined} onClick={onInbox}>
+                <Inbox size={17} aria-hidden="true" /> {hasQuery ? 'Результаты' : 'Входящие'}
+              </button>
+              <button type="button" aria-current={showSaved ? 'page' : undefined} onClick={onSaved}>
+                <Bookmark size={17} aria-hidden="true" /> Избранное
+              </button>
+            </nav>
+            <label className="mailbox-picker">
+              <span className="mailbox-monogram" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+              <span className="mailbox-label" aria-hidden="true">Ящик {index + 1}</span>
+              <ChevronDown size={15} aria-hidden="true" />
+              <select aria-label="Почтовый ящик" value={mailbox.synthetic_user} onChange={(event) => onMailbox(event.target.value)}>
+                {boxes.map((box, position) => <option value={box.synthetic_user} key={box.synthetic_user}>Ящик {position + 1} · {box.synthetic_user}</option>)}
+              </select>
+            </label>
+          </>
+        )}
       </div>
-      {boxes.length > 0 && (
-        <>
-          <nav className="accounts" aria-label="Почтовые ящики">
-            <div className="side-heading">Почтовые ящики</div>
-            <div className="account-list">
-              {boxes.map(({ synthetic_user, count }, index) => (
-                <button
-                  key={synthetic_user}
-                  className="account"
-                  aria-current={active === synthetic_user ? 'true' : undefined}
-                  onClick={() => onChange(synthetic_user)}
-                >
-                  <span className="account-label">
-                    <span>Ящик {index + 1}</span>
-                    <small>{synthetic_user}</small>
-                  </span>
-                  <span className="account-count">{number.format(count)}</span>
-                </button>
-              ))}
-            </div>
-          </nav>
-          <label className="mobile-account">
-            <span className="sr-only">Почтовый ящик</span>
-            <select value={active} onChange={(event) => onChange(event.target.value)}>
-              {boxes.map(({ synthetic_user }, index) => (
-                <option key={synthetic_user} value={synthetic_user}>Ящик {index + 1} · {synthetic_user}</option>
-              ))}
-            </select>
-            <ChevronDown size={16} aria-hidden="true" />
-          </label>
-        </>
-      )}
-    </aside>
+    </header>
   )
 }
 
@@ -97,15 +88,10 @@ function SearchPanel({ draft, setDraft, onSearch, onReveal }) {
 
   useEffect(() => {
     function focusSearch(event) {
-      if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault()
-        if (!inputRef.current?.getClientRects().length) {
-          onReveal()
-          requestAnimationFrame(() => inputRef.current?.focus())
-          return
-        }
-        inputRef.current.focus()
-      }
+      if (event.key.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey)) return
+      event.preventDefault()
+      onReveal()
+      requestAnimationFrame(() => inputRef.current?.focus())
     }
     window.addEventListener('keydown', focusSearch)
     return () => window.removeEventListener('keydown', focusSearch)
@@ -113,15 +99,17 @@ function SearchPanel({ draft, setDraft, onSearch, onReveal }) {
 
   return (
     <section className="search-panel" aria-labelledby="search-heading">
+      <div className="hero-image" aria-hidden="true" />
       <div className="search-content">
-        <h1 className="sr-only" id="search-heading">Поиск по почте</h1>
+        <h1 id="search-heading">Найти письмо<span>.</span></h1>
+        <p>Поиск по почте своими словами</p>
         <form className="search-form" role="search" onSubmit={(event) => { event.preventDefault(); onSearch(draft) }}>
           <Search size={21} className="search-icon" aria-hidden="true" />
           <input
             ref={inputRef}
             type="search"
             aria-label="Поиск по письмам"
-            placeholder="Например, какие заказы пришли вчера?"
+            placeholder="Например, заказы за вчера"
             maxLength={1000}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -131,9 +119,7 @@ function SearchPanel({ draft, setDraft, onSearch, onReveal }) {
         </form>
         <div className="suggestions">
           {SUGGESTIONS.map((suggestion) => (
-            <button key={suggestion} onClick={() => onSearch(suggestion)}>
-              {suggestion}
-            </button>
+            <button type="button" key={suggestion} onClick={() => onSearch(suggestion)}>{suggestion}</button>
           ))}
         </div>
       </div>
@@ -142,78 +128,98 @@ function SearchPanel({ draft, setDraft, onSearch, onReveal }) {
 }
 
 function SenderMark({ content }) {
+  const palette = content.hasSender ? (content.sender.codePointAt(content.sender.length - 1) || 0) % 4 : 0
   return (
-    <span className="sender-mark" aria-hidden="true">
-      {content.hasSender ? initials(content.sender) : <Mail size={17} strokeWidth={1.6} />}
+    <span className={`sender-mark tone-${palette}`} aria-hidden="true">
+      {content.hasSender ? initials(content.sender) : <Mail size={20} strokeWidth={1.65} />}
     </span>
   )
 }
 
-function MailRow({ item, selected, onOpen }) {
+function MailRow({ item, onOpen }) {
   const content = mailContent(item)
   return (
     <li>
-      <button className="mail-row" aria-current={selected ? 'true' : undefined} onClick={onOpen}>
+      <button type="button" className="mail-row" aria-haspopup="dialog" onClick={onOpen}>
+        <SenderMark content={content} />
         <span className="row-content">
-          <span className="row-meta">
-            <span className="sender">{content.sender}</span>
-            <span className="row-date">{mailDate(item.date)}</span>
-          </span>
           <strong className="row-subject">{content.subject}</strong>
           <span className="row-snippet">{preview(content.text) || 'Письмо без текста'}</span>
+          <span className="sender">{content.sender}</span>
         </span>
+        <span className="row-date">{mailDate(item.date)}</span>
       </button>
     </li>
   )
 }
 
-function Reader({ selected, detail, onClose, panelRef, saved, onSave }) {
-  if (!selected) {
-    return (
-      <section className="panel reader reader-empty" aria-label="Просмотр письма">
-        <div className="reader-hint">
-          <MailOpen size={33} strokeWidth={1.25} aria-hidden="true" />
-          <p>Выберите письмо</p>
-          <span>Стрелки перемещают фокус по списку, Enter открывает письмо.</span>
-        </div>
-      </section>
-    )
-  }
+function Reader({ selected, detail, onClose, saved, onSave, position, total, onStep }) {
+  const dialogRef = useRef(null)
 
-  const mail = typeof selected.text === 'string' ? selected : detail.data
-  const content = mailContent(mail || selected)
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (selected && !dialog.open) dialog.showModal()
+    if (!selected && dialog.open) dialog.close()
+  }, [selected])
+
+  const mail = typeof selected?.text === 'string' ? selected : detail.data
+  const content = selected ? mailContent(mail || selected) : null
+
   return (
-    <section className="panel reader reader-active" aria-label="Просмотр письма" ref={panelRef} tabIndex={-1}>
-      <div className="reader-toolbar">
-        <span><Mail size={17} /> Письмо</span>
-        <div className="reader-actions">
-          <button className="icon-button save-button" onClick={() => onSave(mail || selected)} aria-pressed={saved} aria-label={saved ? 'Убрать из избранного' : 'Сохранить в избранное'} title={saved ? 'Убрать из избранного' : 'Сохранить в избранное'}>
-            <Bookmark size={19} fill={saved ? 'currentColor' : 'none'} />
-          </button>
-          <button className="icon-button close-letter" onClick={onClose} aria-label="Закрыть письмо">
-            <X size={19} /><span>К письмам</span>
-          </button>
+    <dialog
+      ref={dialogRef}
+      className="letter-drawer"
+      aria-labelledby="letter-title"
+      onCancel={(event) => { event.preventDefault(); onClose() }}
+      onClick={(event) => { if (event.currentTarget === event.target) onClose() }}
+    >
+      {selected && (
+        <div className="drawer-panel">
+          <div className="reader-toolbar">
+            {position >= 0 && total > 1 ? (
+              <nav className="reader-navigation" aria-label="Листать письма">
+                <button className="icon-button" disabled={position === 0} aria-label="Предыдущее письмо" onClick={() => onStep(-1)}><ChevronLeft size={20} /></button>
+                <span>{position + 1} из {total}</span>
+                <button className="icon-button" disabled={position + 1 === total} aria-label="Следующее письмо" onClick={() => onStep(1)}><ChevronRight size={20} /></button>
+              </nav>
+            ) : <span><Mail size={17} aria-hidden="true" /> Письмо</span>}
+            <div className="reader-actions">
+              <button className="icon-button save-button" onClick={() => onSave(mail || selected)} aria-pressed={saved} aria-label={saved ? 'Убрать из избранного' : 'Сохранить в избранное'} title={saved ? 'Убрать из избранного' : 'Сохранить в избранное'}>
+                <Bookmark size={20} fill={saved ? 'currentColor' : 'none'} />
+              </button>
+              <button className="icon-button" onClick={onClose} aria-label="Закрыть письмо"><X size={21} /></button>
+            </div>
+          </div>
+          <article className="letter" key={selected.doc_id}>
+            <h2 id="letter-title">{content.subject}</h2>
+            <div className="letter-meta">
+              <SenderMark content={content} />
+              <div><strong>{content.sender}</strong><span>{mailDate((mail || selected).date, true)}</span></div>
+            </div>
+            {mail && <div className="letter-text">{content.text || 'Письмо без текста.'}</div>}
+            {!mail && detail.status === 'loading' && <Notice icon={LoaderCircle} title="Загружаем письмо" />}
+            {!mail && detail.status === 'error' && (
+              <Notice icon={MailOpen} title="Письмо не загрузилось" action={detail.retry} actionText="Повторить">
+                {content.text || 'Попробуйте загрузить письмо снова.'}
+              </Notice>
+            )}
+          </article>
         </div>
-      </div>
-      <article className="letter" key={selected.doc_id}>
-        <h2>{content.subject}</h2>
-        <div className="letter-meta">
-          <SenderMark content={content} />
-          <div><strong>{content.sender}</strong><span>{mailDate((mail || selected).date, true)}</span></div>
-        </div>
-        {mail && <div className="letter-text">{content.text || 'Письмо без текста.'}</div>}
-        {!mail && detail.status === 'loading' && <Notice icon={LoaderCircle} title="Загружаем письмо" />}
-        {!mail && detail.status === 'error' && (
-          <Notice icon={MailOpen} title="Письмо не загрузилось" action={detail.retry} actionText="Повторить">
-            {content.text || 'Попробуйте загрузить письмо снова.'}
-          </Notice>
-        )}
-      </article>
-    </section>
+      )}
+    </dialog>
   )
 }
 
-function Workspace({ mailbox }) {
+function moveListFocus(event) {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+  const row = event.target.closest('.mail-row')?.parentElement
+  if (!row) return
+  const neighbor = event.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling
+  event.preventDefault()
+  neighbor?.querySelector('.mail-row')?.focus()
+}
+
+function Workspace({ mailbox, boxes, onMailbox }) {
   const id = mailbox.synthetic_user
   const [draft, setDraft] = useState('')
   const [query, setQuery] = useState('')
@@ -223,8 +229,7 @@ function Workspace({ mailbox }) {
   const [showSaved, setShowSaved] = useState(false)
   const [saved, setSaved] = useState(() => loadSaved(id))
   const [storageFailed, setStorageFailed] = useState(false)
-  const panelRef = useRef(null)
-  const listRef = useRef(null)
+  const listHeading = useRef(null)
   const openButton = useRef(null)
 
   const searchDate = query ? date : ''
@@ -235,14 +240,10 @@ function Workspace({ mailbox }) {
   const loadDetail = useCallback((signal) => api.message(id, selected.doc_id, signal), [id, selected])
   const detail = useRequest(selected && typeof selected.text !== 'string' ? loadDetail : null)
 
-  useEffect(() => {
-    if (selected && window.matchMedia('(max-width: 1070px)').matches) panelRef.current?.focus()
-  }, [selected])
-
   function changePage(nextOffset) {
     setSelected(null)
     setOffset(nextOffset)
-    listRef.current?.scrollTo({ top: 0 })
+    listHeading.current?.scrollIntoView({ block: 'nearest' })
   }
 
   function search(value) {
@@ -264,29 +265,10 @@ function Workspace({ mailbox }) {
 
   const revealSearch = useCallback(() => setSelected(null), [])
 
-  const closeLetter = useCallback(() => {
+  function closeLetter() {
     setSelected(null)
-    requestAnimationFrame(() => openButton.current?.focus({ preventScroll: true }))
-  }, [])
-
-  function moveListFocus(event) {
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-    const current = event.target.closest('.mail-row')
-    if (!current) return
-    const row = current.parentElement
-    const neighbor = event.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling
-    event.preventDefault()
-    neighbor?.querySelector('.mail-row')?.focus()
+    requestAnimationFrame(() => (openButton.current?.isConnected ? openButton.current : listHeading.current)?.focus({ preventScroll: true }))
   }
-
-  useEffect(() => {
-    if (!selected) return
-    function handleClose(event) {
-      if (event.key === 'Escape' && !event.defaultPrevented && !event.target.matches?.('input, select')) closeLetter()
-    }
-    window.addEventListener('keydown', handleClose)
-    return () => window.removeEventListener('keydown', handleClose)
-  }, [selected, closeLetter])
 
   function toggleSaved(letter) {
     const nextSaved = saved.some((item) => item.doc_id === letter.doc_id)
@@ -297,6 +279,7 @@ function Workspace({ mailbox }) {
   }
 
   const items = showSaved ? saved : (rows.data?.results ?? rows.data?.messages ?? [])
+  const position = selected ? items.findIndex((item) => item.doc_id === selected.doc_id) : -1
   const total = rows.data?.total ?? mailbox.count
   const count = rows.data?.count
   const receivedOn = rows.data?.received_on
@@ -305,41 +288,42 @@ function Workspace({ mailbox }) {
   const visibleCount = showSaved ? saved.length : query ? count : total
 
   return (
-    <div className={selected ? 'mail-view has-letter' : 'mail-view'}>
-      <SearchPanel draft={draft} setDraft={setDraft} onSearch={search} onReveal={revealSearch} />
-      <div className={`workspace${selected ? ' letter-visible' : ''}`}>
-        <section className="panel inbox" aria-labelledby="inbox-heading">
+    <>
+      <Header
+        boxes={boxes}
+        mailbox={mailbox}
+        onMailbox={onMailbox}
+        showSaved={showSaved}
+        onInbox={() => setShowSaved(false)}
+        onSaved={() => setShowSaved(true)}
+        hasQuery={Boolean(query)}
+      />
+      <main className="main" id="mail-main">
+        <SearchPanel draft={draft} setDraft={setDraft} onSearch={search} onReveal={revealSearch} />
+        <section className="inbox" aria-labelledby="inbox-heading">
           <div className="inbox-heading">
             <div className="title-row">
-              <h2 id="inbox-heading">{title}</h2>
+              <h2 id="inbox-heading" ref={listHeading} tabIndex={-1}>{title}</h2>
               {showCount && <span className="count">{number.format(visibleCount)}</span>}
             </div>
-            <div className="list-controls">
-              <button
-                className="saved-toggle"
-                onClick={() => { setShowSaved(!showSaved); setSelected(null) }}
-                aria-pressed={showSaved}
-              >
-                <Bookmark size={16} /> {showSaved ? (query ? 'К результатам' : 'К входящим') : 'Избранное'}
-              </button>
-              {!showSaved && query && <button className="quiet reset-search" onClick={clearSearch}><X size={15} /> Сбросить поиск</button>}
-              {!showSaved && <div className="date-filter">
-                <label htmlFor="query-date" title="Последний доступный день и дата отсчёта для «вчера»">
-                  <CalendarDays size={16} /><span>Поиск до</span>
-                </label>
-                <input
-                  id="query-date"
-                  type="date"
-                  aria-label="Искать письма до даты включительно"
-                  value={date}
-                  onInput={(event) => {
-                    setDate(event.target.value)
-                    if (query) setSelected(null)
-                  }}
-                />
-                {date && <button className="icon-button" aria-label="Убрать ограничение по дате" onClick={() => { setDate(''); if (query) setSelected(null) }}><X size={15} /></button>}
-              </div>}
-            </div>
+            {!showSaved && (
+              <div className="list-controls">
+                {query && <button className="quiet" onClick={clearSearch}><X size={15} /> Сбросить</button>}
+                <div className="date-filter">
+                  <label htmlFor="query-date" title="Последний доступный день и дата отсчёта для «вчера»">
+                    <CalendarDays size={16} /><span>Поиск до</span>
+                  </label>
+                  <input
+                    id="query-date"
+                    type="date"
+                    aria-label="Искать письма до даты включительно"
+                    value={date}
+                    onInput={(event) => setDate(event.target.value)}
+                  />
+                  {date && <button className="icon-button date-clear" aria-label="Убрать ограничение по дате" onClick={() => setDate('')}><X size={15} /></button>}
+                </div>
+              </div>
+            )}
           </div>
           {!showSaved && query && (
             <div className="list-meta">
@@ -348,7 +332,7 @@ function Workspace({ mailbox }) {
             </div>
           )}
           {storageFailed && <div className="storage-state" role="status">Браузер заблокировал сохранение. Избранное доступно до обновления страницы.</div>}
-          <div className="mail-list" ref={listRef} onKeyDown={moveListFocus} aria-busy={rows.status === 'loading'}>
+          <div className="mail-list" onKeyDown={moveListFocus} aria-busy={rows.status === 'loading'}>
             {rows.status === 'loading' && <Notice icon={LoaderCircle} title={query ? 'Ищем письма' : 'Загружаем письма'} />}
             {rows.status === 'error' && <Notice title={query ? 'Поиск не удался' : 'Письма не загрузились'} action={rows.retry} actionText="Повторить">Проверьте подключение к API.</Notice>}
             {rows.status === 'ready' && !items.length && (
@@ -361,12 +345,7 @@ function Workspace({ mailbox }) {
             )}
             {items.length > 0 && (
               <ul>{items.map((item) => (
-                <MailRow
-                  key={item.doc_id}
-                  item={item}
-                  selected={item.doc_id === selected?.doc_id}
-                  onOpen={(event) => { openButton.current = event.currentTarget; setSelected(item) }}
-                />
+                <MailRow key={item.doc_id} item={item} onOpen={(event) => { openButton.current = event.currentTarget; setSelected(item) }} />
               ))}</ul>
             )}
           </div>
@@ -374,23 +353,25 @@ function Workspace({ mailbox }) {
             <div className="pagination" aria-label="Страницы входящих">
               <span>{number.format(offset + 1)}–{number.format(offset + items.length)} из {number.format(total)}</span>
               <div>
-                <button className="icon-button" aria-label="Предыдущая страница" disabled={offset === 0} onClick={() => changePage(offset - PAGE_SIZE)}><ChevronLeft size={17} /></button>
-                <button className="icon-button" aria-label="Следующая страница" disabled={offset + items.length >= total} onClick={() => changePage(offset + PAGE_SIZE)}><ChevronRight size={17} /></button>
+                <button className="icon-button" aria-label="Предыдущая страница" disabled={offset === 0} onClick={() => changePage(offset - PAGE_SIZE)}><ChevronLeft size={18} /></button>
+                <button className="icon-button" aria-label="Следующая страница" disabled={offset + items.length >= total} onClick={() => changePage(offset + PAGE_SIZE)}><ChevronRight size={18} /></button>
               </div>
             </div>
           )}
           {!showSaved && query && count === SEARCH_LIMIT && <div className="pagination">Показано до {SEARCH_LIMIT} результатов</div>}
         </section>
-        <Reader
-          selected={selected}
-          detail={detail}
-          onClose={closeLetter}
-          panelRef={panelRef}
-          saved={saved.some((item) => item.doc_id === selected?.doc_id)}
-          onSave={toggleSaved}
-        />
-      </div>
-    </div>
+      </main>
+      <Reader
+        selected={selected}
+        detail={detail}
+        onClose={closeLetter}
+        saved={saved.some((item) => item.doc_id === selected?.doc_id)}
+        onSave={toggleSaved}
+        position={position}
+        total={items.length}
+        onStep={(direction) => setSelected(items[position + direction])}
+      />
+    </>
   )
 }
 
@@ -403,20 +384,20 @@ function App() {
   return (
     <div className="app">
       <a className="skip-link" href="#mail-main">К почте</a>
-      <Sidebar boxes={boxes} active={current?.synthetic_user || ''} onChange={setActive} />
-      <main className="main" id="mail-main">
-        {current ? <Workspace key={current.synthetic_user} mailbox={current} /> : (
-          <section className="panel service-state" aria-label="Состояние почты">
+      {current ? <Workspace key={current.synthetic_user} mailbox={current} boxes={boxes} onMailbox={setActive} /> : (
+        <>
+          <Header />
+          <main className="main service-state" id="mail-main">
             {mailboxes.status === 'loading' && <Notice icon={LoaderCircle} title="Подключаемся к почте" />}
             {mailboxes.status === 'error' && (
               <Notice icon={Mail} title="Не удалось загрузить ящики" action={mailboxes.retry} actionText="Повторить подключение">
-                Проверьте, что бэкенд запущен и адрес VITE_API_BASE_URL доступен из браузера.
+                Проверьте подключение к серверу почты.
               </Notice>
             )}
             {mailboxes.status === 'ready' && <Notice title="Почтовых ящиков пока нет" />}
-          </section>
-        )}
-      </main>
+          </main>
+        </>
+      )}
     </div>
   )
 }
