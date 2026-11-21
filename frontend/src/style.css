@@ -73,9 +73,25 @@ svg { display: block; flex: none; }
 
 .main { display: flex; flex-direction: column; width: 100%; max-width: 1740px; margin: 0 auto; padding: 24px clamp(16px, 2.25vw, 36px); min-width: 0; min-height: 0; }
 .mail-view { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 18px; }
-.search-panel { padding: 0 0 15px; border-bottom: 1px solid var(--line); }
-.search-content { max-width: 840px; min-width: 0; }
-.search-panel h1 { font: 810 clamp(1.38rem, 2.2vw, 2.02rem)/1.15 var(--heading); letter-spacing: -.045em; margin-bottom: 12px; }
+.search-panel {
+  position: relative;
+  isolation: isolate;
+  padding: 19px 21px 16px;
+  border: 1px solid #dce2f4;
+  border-radius: 13px;
+  background: #edf1ff;
+}
+.search-panel::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 8px 8px 8px auto;
+  width: min(32%, 370px);
+  border-radius: 8px;
+  background: #2547b8 url('./assets/mail-envelope.webp') 55% 49% / cover no-repeat;
+}
+.search-content { max-width: min(780px, 66%); min-width: 0; }
+.search-panel h1 { color: #202f57; font: 810 clamp(1.38rem, 2.2vw, 2.02rem)/1.15 var(--heading); letter-spacing: -.045em; margin-bottom: 12px; }
 .search-form { display: flex; align-items: center; gap: 10px; max-width: 780px; border: 1px solid #cbd0d9; border-radius: 9px; background: white; min-height: 51px; padding: 4px 4px 4px 13px; color: var(--ink); }
 .search-form:focus-within { border-color: var(--blue); outline: 2px solid #dce3f9; outline-offset: 1px; }
 .search-icon { color: #5e6677; }
@@ -87,7 +103,7 @@ svg { display: block; flex: none; }
 .search-form button:disabled { background: #f0f1f3; color: #616977; }
 .search-form button:hover:enabled { background: #203b97; }
 .suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
-.suggestions button { padding: 5px 9px; border: 1px solid #d9dcd7; border-radius: 5px; background: transparent; color: #565e6d; text-align: left; font-size: .81rem; font-weight: 520; }
+.suggestions button { padding: 5px 9px; border: 1px solid #cfd9f1; border-radius: 5px; background: #f8faff; color: #3d4d75; text-align: left; font-size: .81rem; font-weight: 520; }
 .suggestions button:hover { background: #fff; border-color: #aebcdb; color: var(--blue); }
 
 .workspace { display: grid; grid-template-columns: minmax(0, 1.03fr) minmax(0, 1fr); gap: 15px; flex: 1; min-height: 0; }
@@ -179,8 +195,10 @@ svg { display: block; flex: none; }
   .mobile-account select { appearance: none; width: 100%; padding: 8px 27px 8px 9px; min-height: 42px; border: 1px solid #ced2ce; border-radius: 7px; color: var(--ink); background: #fafbf9; font-size: .875rem; }
   .mobile-account svg { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); pointer-events: none; color: #4b5362; }
   .main { padding: 12px max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
-  .search-panel { padding-bottom: 10px; }
-  .search-panel h1 { margin-bottom: 9px; }
+  .search-panel { padding: 13px 11px 10px; }
+  .search-panel::before { inset: 6px 6px auto auto; width: min(27%, 118px); height: 47px; background-position: 60% 46%; }
+  .search-content { max-width: none; }
+  .search-panel h1 { margin-bottom: 13px; padding-right: min(29%, 126px); }
   .search-form { min-height: 50px; gap: 7px; padding: 3px 3px 3px 9px; }
   .search-form kbd { display: none; }
   .search-form button { min-height: 42px; padding: 0 11px; }
