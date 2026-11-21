@@ -4,11 +4,18 @@ Hackathon prototype for finding a letter in a mailbox from a natural-language re
 
 ## Current backend
 
-The live `/search` endpoint always has a local BM25 engine with Russian lemmatization (`pymorphy3`), mailbox-specific document statistics, a subject boost, and a query-term coverage boost. If the ignored local vector index and model cache exist, it also uses local multilingual embeddings and the included LightGBM reranker. No search request is sent to an inference API. Without the vector cache, the endpoint falls back to BM25. The API contract below remains stable while retrieval experiments continue.
+The live `/search` endpoint parses an explicitly requested receipt date (including «вчера» relative to `query_date`) and searches only that mailbox's messages from that day. Other queries use a local BM25 engine with Russian lemmatization, mailbox-specific statistics, subject and term-coverage boosts, and, when the ignored local vector index is present, local Potion embeddings plus a LightGBM reranker. Search inference is local; no request goes to a model API. Without the optional vector cache, the date-aware BM25 path remains available.
 
-The public development set has 99 queries and 565 relevance labels. The improved lexical configuration gets about `Recall@10=0.52`, `Recall@100=0.86`, `nDCG@10=0.37`, and `MRR@10=0.36`. With Potion multilingual embeddings, 150 candidates per retrieval path, and the regularized LightGBM reranker, three five-fold query-held-out splits average `Recall@10=0.57`, `Recall@100=0.86`, `nDCG@10=0.48`, and `MRR@10=0.48`. Holding out whole mailboxes gives `Recall@10=0.55`, `Recall@100=0.84`, `nDCG@10=0.47`, and `MRR@10=0.47`. These are development signals, not a promise about the hidden benchmark.
+On the 99 public queries (565 relevance labels), the date-aware API gets `Recall@10=0.8879`, `Recall@100=0.9923`, `nDCG@10=0.9304`, and `MRR@10=0.9503`. This benchmark explicitly asks about receipt dates, so the engine resolves that constraint from the query and mailbox metadata. With receipt-date parsing disabled, Potion plus the LightGBM reranker gets `nDCG@10=0.485` and `MRR@10=0.494` across three five-fold query-held-out splits on the same public queries; whole-mailbox holdout gives `nDCG@10=0.479` and `MRR@10=0.489`. This is an ablation, not an evaluation on a separate no-date qrel set. The organizers' private benchmark may have a different query mix.
 
-On the local hackathon machine, the HTTP stress run completed 495 requests at each concurrency level with zero errors. p99 latency was 335 ms at 8 workers, 312 ms at 16, 415 ms at 32, and 756 ms at 64. This is one development machine/run; repeat on the target deployment hardware.
+| Mode on public queries | Recall@10 | Recall@100 | nDCG@10 | MRR@10 |
+| --- | ---: | ---: | ---: | ---: |
+| BM25 lexical baseline | 0.5239 | 0.8637 | 0.3665 | 0.3582 |
+| Date-aware integrated API | 0.8879 | 0.9923 | 0.9304 | 0.9503 |
+
+The table uses the public date-heavy queries. Use the held-out hybrid ablation above to assess the reranker without receipt-date parsing.
+
+On this machine, 495 HTTP requests at each concurrency level completed with zero errors. At 64 workers, p99 was 46.6 ms for the public receipt-date queries and 544.1 ms when those date phrases were removed to exercise hybrid retrieval. The latter is a latency workload only; it has no matching quality labels. Both are strictly below the 1-second requirement in these runs; remeasure on the final deployment machine.
 
 ## Start the backend
 
@@ -19,7 +26,9 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app:app --reload --port 8000
+pip install -r requirements-search-lab.txt
+python build_semantic_index.py
+uvicorn app:app --port 8000
 ```
 
 Open `http://localhost:8000/docs` for interactive API documentation.
@@ -37,7 +46,7 @@ Open `http://localhost:8000/docs` for interactive API documentation.
 }
 ```
 
-The response contains `count` and `results`, each with `doc_id`, `date`, `snippet`, and `score`. `synthetic_user` is required so results stay within the selected mailbox. `query_date` excludes emails with a known later date; it may be omitted.
+The response contains `count` and `results`, each with `doc_id`, `date`, `snippet`, and `score`. `synthetic_user` is required so results stay within the selected mailbox. `query_date` excludes later mail and provides the reference day for relative dates such as «вчера»; it may be omitted.
 
 Other routes:
 
@@ -56,12 +65,13 @@ Run from `backend/` after installing the backend dependencies:
 python evaluate.py --latency-repeats 5
 ```
 
-This reports Recall@10, Recall@100, nDCG@10, MRR@10, and in-process p50/p95/p99 latency for the public queries. Use `--mode lexical` for the BM25 baseline. When the full public-set reranker is loaded, active-mode scores are in-sample; use `reranker_experiment.py` for held-out quality estimates.
+This reports Recall@10, Recall@100, nDCG@10, MRR@10, and in-process p50/p95/p99 latency for the public queries. `--mode lexical` measures the active lexical path. For the original lexical baseline, run `MAIL_RECEIPT_DATES=0 python evaluate.py --mode lexical`. The bundled reranker was trained on public relevance labels, so use held-out evaluation for the hybrid path.
 
 To load-test the running HTTP API with repeated public queries:
 
 ```bash
 python stress_http.py --workers 8 16 32 64 --repeats 5
+python stress_http.py --workers 8 32 64 --repeats 5 --without-receipt-dates
 ```
 
 ## Optional local semantic-search experiments
@@ -72,11 +82,11 @@ The semantic model is Potion multilingual embeddings run locally. Model weights 
 cd backend
 pip install -r requirements-search-lab.txt
 python build_semantic_index.py
-MAIL_LEMMATIZE=1 MAIL_MAILBOX_IDF=1 MAIL_SUBJECT_BOOST=0.25 MAIL_COVERAGE_BOOST=2 python evaluate_dense.py
-MAIL_LEMMATIZE=1 MAIL_MAILBOX_IDF=1 MAIL_SUBJECT_BOOST=0.25 MAIL_COVERAGE_BOOST=2 python reranker_experiment.py --depth 100
+MAIL_RECEIPT_DATES=0 MAIL_LEMMATIZE=1 MAIL_MAILBOX_IDF=1 MAIL_SUBJECT_BOOST=0.25 MAIL_COVERAGE_BOOST=2 python evaluate_dense.py
+MAIL_RECEIPT_DATES=0 MAIL_LEMMATIZE=1 MAIL_MAILBOX_IDF=1 MAIL_SUBJECT_BOOST=0.25 MAIL_COVERAGE_BOOST=2 python reranker_experiment.py --depth 150
 ```
 
-The reranker experiment uses five-fold query-held-out and mailbox-held-out evaluation. To retrain a model from the full public set, pass `--save-model ranker_model.txt`; evaluate the held-out metrics before replacing the tracked model.
+The reranker experiment uses five-fold query-held-out and mailbox-held-out evaluation. Disable receipt-date parsing for this comparison so it measures the hybrid retrieval/reranking path. Its default configuration is 150 trees, five leaves, max depth 3, 30 minimum child samples, and L2 regularization 8. To retrain a model from the full public set, pass `--save-model ranker_model.txt`; evaluate held-out metrics before replacing the tracked model.
 
 The default embedding model is `minishlab/potion-multilingual-128M`, and the search endpoint retrieves 150 lexical and 150 dense candidates by default. You can override these settings with `MAIL_EMBEDDING_MODEL` and `MAIL_CANDIDATE_DEPTH`; rebuild the vector index and ranker together when changing the embedding model or candidate depth.
 

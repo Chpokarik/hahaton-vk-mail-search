@@ -21,6 +21,7 @@ os.environ.setdefault("OMP_NUM_THREADS", os.environ.get("MAIL_OMP_THREADS", "1")
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from query_dates import ReceiptQuery, parse_receipt_query
 
 
 TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
@@ -31,6 +32,7 @@ USE_LEMMAS = os.environ.get("MAIL_LEMMATIZE", "1") != "0"
 MAILBOX_LOCAL_IDF = os.environ.get("MAIL_MAILBOX_IDF", "1") != "0"
 SUBJECT_BOOST = float(os.environ.get("MAIL_SUBJECT_BOOST", "0.25"))
 COVERAGE_BOOST = float(os.environ.get("MAIL_COVERAGE_BOOST", "2"))
+USE_RECEIPT_DATES = os.environ.get("MAIL_RECEIPT_DATES", "1") != "0"
 BM25_K1 = float(os.environ.get("MAIL_BM25_K1", "1.5"))
 BM25_B = float(os.environ.get("MAIL_BM25_B", "0.75"))
 SEMANTIC_MODEL = os.environ.get(
@@ -95,6 +97,8 @@ class MailSearch:
         self.mailbox_documents: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.postings: dict[str, set[str]] = defaultdict(set)
         self.mailbox_postings: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+        self.receipt_dates: dict[str, date] = {}
+        self.mailbox_days: dict[tuple[str, date], set[str]] = defaultdict(set)
         self.mailbox_doc_counts: Counter[str] = Counter()
         self.mailbox_length_sums: Counter[str] = Counter()
         for doc in documents:
@@ -102,6 +106,15 @@ class MailSearch:
             doc_id = doc["doc_id"]
             mailbox = doc["synthetic_user"]
             self.mailbox_documents[mailbox].append(doc)
+            raw_date = doc.get("doc_dt")
+            if raw_date:
+                try:
+                    receipt_date = date.fromisoformat(raw_date)
+                except ValueError:
+                    pass
+                else:
+                    self.receipt_dates[doc_id] = receipt_date
+                    self.mailbox_days[mailbox, receipt_date].add(doc_id)
             self.lengths[doc_id] = len(tokens)
             self.token_sequences[doc_id] = tuple(tokens)
             self.mailbox_doc_counts[mailbox] += 1
@@ -163,28 +176,43 @@ class MailSearch:
             print(f"Dense retrieval disabled ({type(exc).__name__})")
 
     def search_lexical(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
-        terms = tokenize(query)
-        if not terms:
+        receipt = self.parse_query(query, as_of)
+        if as_of and receipt.day and receipt.day > as_of:
             return []
+
+        terms = tokenize(receipt.text)
+        if receipt.day:
+            terms = [term for term in terms if term not in STOPWORDS or term in {"не", "нет"}]
+        if not terms and receipt.day is None:
+            return []
+
         coverage_terms = set(terms) - STOPWORDS
         candidate_ids: set[str] = set()
         mailbox_index = self.mailbox_postings.get(mailbox, {})
-        for term in set(terms):
-            candidate_ids.update(mailbox_index.get(term, ()))
+        if receipt.day is None:
+            for term in set(terms):
+                candidate_ids.update(mailbox_index.get(term, ()))
+        else:
+            received_that_day = self.mailbox_days.get((mailbox, receipt.day), set())
+            for term in set(terms):
+                candidate_ids.update(received_that_day.intersection(mailbox_index.get(term, ())))
+            if not terms:
+                candidate_ids = set(received_that_day)
 
         n_docs = self.mailbox_doc_counts.get(mailbox, 0) if MAILBOX_LOCAL_IDF else len(self.documents)
         avg_len = self.mailbox_avg_len.get(mailbox, self.avg_len) if MAILBOX_LOCAL_IDF else self.avg_len
         k1, b = BM25_K1, BM25_B
+        frequencies = mailbox_index if MAILBOX_LOCAL_IDF else self.postings
+        idfs = {
+            term: math.log(1 + (n_docs - len(frequencies.get(term, ())) + 0.5) / (len(frequencies.get(term, ())) + 0.5))
+            for term in set(terms)
+        }
         scored: list[tuple[float, dict[str, Any]]] = []
         for doc_id in candidate_ids:
             doc = self.by_id[doc_id]
-            raw_date = doc.get("doc_dt")
-            if as_of is not None and raw_date:
-                try:
-                    if date.fromisoformat(raw_date) > as_of:
-                        continue
-                except ValueError:
-                    pass
+            doc_date = self.receipt_dates.get(doc_id)
+            if as_of is not None and doc_date is not None and doc_date > as_of:
+                continue
             freqs = self.term_freqs[doc_id]
             length = self.lengths[doc_id]
             score = 0.0
@@ -192,8 +220,7 @@ class MailSearch:
                 tf = freqs.get(term, 0)
                 if not tf:
                     continue
-                df = len(mailbox_index.get(term, ())) if MAILBOX_LOCAL_IDF else len(self.postings.get(term, ()))
-                idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+                idf = idfs[term]
                 denom = tf + k1 * (1 - b + b * length / max(avg_len, 1))
                 score += idf * tf * (k1 + 1) / denom
                 if SUBJECT_BOOST:
@@ -205,7 +232,7 @@ class MailSearch:
             if COVERAGE_BOOST and coverage_terms:
                 covered = sum(1 for term in coverage_terms if freqs.get(term, 0))
                 score *= 1 + COVERAGE_BOOST * covered / len(coverage_terms)
-            if score:
+            if score or not terms:
                 scored.append((score, doc))
 
         scored.sort(key=lambda item: (-item[0], item[1]["doc_id"]))
@@ -218,6 +245,10 @@ class MailSearch:
             }
             for score, doc in scored[:limit]
         ]
+
+    @staticmethod
+    def parse_query(query: str, as_of: date | None) -> ReceiptQuery:
+        return parse_receipt_query(query, as_of) if USE_RECEIPT_DATES else ReceiptQuery(query)
 
     def _dense_search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> tuple[list[str], dict[str, float]]:
         if self.dense_model is None:
@@ -246,7 +277,7 @@ class MailSearch:
         return ranked, best
 
     def search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
-        if self.dense_model is None:
+        if self.dense_model is None or self.parse_query(query, as_of).day is not None:
             return self.search_lexical(query, mailbox, as_of, limit)
 
         depth = max(CANDIDATE_DEPTH, limit)

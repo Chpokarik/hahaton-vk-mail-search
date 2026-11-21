@@ -6,12 +6,16 @@ import argparse
 import concurrent.futures
 import json
 import math
+import os
 import statistics
 import time
 import urllib.request
 import zipfile
+from datetime import date
 from pathlib import Path
 from typing import Any
+
+from query_dates import parse_receipt_query
 
 
 DEFAULT_ARCHIVE = Path(__file__).resolve().parents[2] / "mipt_mail_search_participants.zip"
@@ -27,11 +31,19 @@ def main() -> None:
     parser.add_argument("--url", default="http://localhost:8000/search")
     parser.add_argument("--workers", type=int, nargs="+", default=[8, 16, 32])
     parser.add_argument("--repeats", type=int, default=5, help="cycles through all public queries")
+    parser.add_argument("--without-receipt-dates", action="store_true", help="exercise hybrid retrieval")
     args = parser.parse_args()
+    if args.repeats < 1 or min(args.workers) < 1:
+        parser.error("repeats and worker counts must be positive")
 
-    with zipfile.ZipFile(DEFAULT_ARCHIVE) as archive:
+    archive_path = Path(os.environ.get("MAIL_DATASET_ZIP", DEFAULT_ARCHIVE))
+    with zipfile.ZipFile(archive_path) as archive:
         queries = [json.loads(line) for line in archive.read("queries_dev.jsonl").splitlines()]
-    workload = [queries[index % len(queries)] for index in range(len(queries) * args.repeats)]
+    if args.without_receipt_dates:
+        for query in queries:
+            reference = date.fromisoformat(query["query_date"]) if query.get("query_date") else None
+            query["query"] = parse_receipt_query(query["query"], reference).text
+    workload = queries * args.repeats
 
     def request(query: dict[str, Any]) -> float:
         body = json.dumps(
@@ -68,6 +80,8 @@ def main() -> None:
                 except Exception as exc:
                     errors.append(str(exc))
         elapsed = time.perf_counter() - started
+        if not latencies:
+            raise SystemExit(f"all HTTP requests failed for {workers} workers: {errors[:3]}")
         print(
             f"workers={workers} requests={len(workload)} errors={len(errors)} "
             f"wall_s={elapsed:.2f} throughput={len(workload) / elapsed:.1f}/s "
