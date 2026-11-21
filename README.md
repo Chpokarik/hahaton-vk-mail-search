@@ -6,7 +6,9 @@ Hackathon prototype for finding a letter in a mailbox from a natural-language re
 
 The live `/search` endpoint always has a local BM25 engine with Russian lemmatization (`pymorphy3`), mailbox-specific document statistics, a subject boost, and a query-term coverage boost. If the ignored local vector index and model cache exist, it also uses local multilingual embeddings and the included LightGBM reranker. No search request is sent to an inference API. Without the vector cache, the endpoint falls back to BM25. The API contract below remains stable while retrieval experiments continue.
 
-The public development set has 99 queries and 565 relevance labels. The improved lexical configuration gets about `Recall@10=0.52`, `Recall@100=0.86`, `nDCG@10=0.37`, and `MRR@10=0.36`. Across three different five-fold query-held-out splits, hybrid candidate retrieval plus the regularized LightGBM reranker averages `Recall@10=0.57`, `nDCG@10=0.45`, and `MRR@10=0.44`. Holding out whole mailboxes gives `Recall@10=0.55`, `nDCG@10=0.43`, and `MRR@10=0.41`. These are development signals, not a promise about the hidden benchmark.
+The public development set has 99 queries and 565 relevance labels. The improved lexical configuration gets about `Recall@10=0.52`, `Recall@100=0.86`, `nDCG@10=0.37`, and `MRR@10=0.36`. With Potion multilingual embeddings and the regularized LightGBM reranker, three five-fold query-held-out splits average `Recall@10=0.57`, `nDCG@10=0.47`, and `MRR@10=0.48`. Holding out whole mailboxes gives `Recall@10=0.54`, `nDCG@10=0.46`, and `MRR@10=0.46`. These are development signals, not a promise about the hidden benchmark.
+
+On the local hackathon machine, the HTTP stress run completed 495 requests at each concurrency level with zero errors. p99 latency was 304 ms at 8 workers, 300 ms at 16, 368 ms at 32, and 740 ms at 64. This is one development machine/run; repeat on the target deployment hardware.
 
 ## Start the backend
 
@@ -64,7 +66,7 @@ python stress_http.py --workers 8 16 32 64 --repeats 5
 
 ## Optional local semantic-search experiments
 
-The semantic model is a compact multilingual encoder run on the local machine. The model weights are downloaded once during setup; query text is not sent to an inference API. The generated model cache and vector index stay under the ignored `backend/.cache/` directory and are not committed. The included `backend/ranker_model.txt` is trained on the public qrels and is used automatically when both the vector index and model cache exist.
+The semantic model is Potion multilingual embeddings run locally. Model weights are downloaded once during setup; query text is not sent to an inference API. The generated model cache and vector index stay under the ignored `backend/.cache/` directory and are not committed. The included `backend/ranker_model.txt` is trained on the public qrels and is used automatically when both the matching vector index and model cache exist. Install the optional search dependencies to enable the hybrid path; otherwise the API falls back to BM25.
 
 ```bash
 cd backend
@@ -75,6 +77,8 @@ MAIL_LEMMATIZE=1 MAIL_MAILBOX_IDF=1 MAIL_SUBJECT_BOOST=0.25 MAIL_COVERAGE_BOOST=
 ```
 
 The reranker experiment uses five-fold query-held-out and mailbox-held-out evaluation. To retrain a model from the full public set, pass `--save-model ranker_model.txt`; evaluate the held-out metrics before replacing the tracked model.
+
+The default embedding model is `minishlab/potion-multilingual-128M`. You can override it with `MAIL_EMBEDDING_MODEL`; rebuild the vector index and ranker together when changing models.
 
 ## Dataset
 

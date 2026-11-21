@@ -26,7 +26,9 @@ ROOT = Path(__file__).resolve().parents[1]
 ARCHIVE_PATH = Path(os.environ.get("MAIL_DATASET_ZIP", ROOT.parent / "mipt_mail_search_participants.zip"))
 INDEX_PATH = Path(os.environ.get("MAIL_VECTOR_INDEX", Path(__file__).resolve().parent / ".cache" / "semantic-index.npz"))
 MODEL_CACHE_PATH = Path(os.environ.get("MAIL_MODEL_CACHE", Path(__file__).resolve().parent / ".cache" / "fastembed"))
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+MODEL_NAME = os.environ.get(
+    "MAIL_EMBEDDING_MODEL", "minishlab/potion-multilingual-128M"
+)
 def metrics(ranked: list[str], relevant: set[str]) -> tuple[float, float, float, float]:
     if not relevant:
         return 0.0, 0.0, 0.0, 0.0
@@ -57,11 +59,10 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
     chunk_ids = index["doc_ids"]
     mailbox_ids = index["mailbox_ids"]
     vectors = index["vectors"].astype(np.float32, copy=False)
-    model = TextEmbedding(
-        model_name=MODEL_NAME,
-        cache_dir=str(MODEL_CACHE_PATH),
-        threads=int(os.environ.get("MAIL_EMBED_THREADS", "4")),
-    )
+    embedding_args = {"model_name": MODEL_NAME, "cache_dir": str(MODEL_CACHE_PATH)}
+    if not MODEL_NAME.startswith("minishlab/potion-"):
+        embedding_args["threads"] = int(os.environ.get("MAIL_EMBED_THREADS", "4"))
+    model = TextEmbedding(**embedding_args)
     examples: list[dict[str, Any]] = []
     query_meta: list[dict[str, Any]] = []
 

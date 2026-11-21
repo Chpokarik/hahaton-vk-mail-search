@@ -33,7 +33,9 @@ SUBJECT_BOOST = float(os.environ.get("MAIL_SUBJECT_BOOST", "0.25"))
 COVERAGE_BOOST = float(os.environ.get("MAIL_COVERAGE_BOOST", "2"))
 BM25_K1 = float(os.environ.get("MAIL_BM25_K1", "1.5"))
 BM25_B = float(os.environ.get("MAIL_BM25_B", "0.75"))
-SEMANTIC_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+SEMANTIC_MODEL = os.environ.get(
+    "MAIL_EMBEDDING_MODEL", "minishlab/potion-multilingual-128M"
+)
 VECTOR_INDEX_PATH = Path(os.environ.get("MAIL_VECTOR_INDEX", Path(__file__).resolve().parent / ".cache" / "semantic-index.npz"))
 MODEL_CACHE_PATH = Path(os.environ.get("MAIL_MODEL_CACHE", Path(__file__).resolve().parent / ".cache" / "fastembed"))
 RANKER_PATH = Path(os.environ.get("MAIL_RANKER_PATH", Path(__file__).resolve().parent / "ranker_model.txt"))
@@ -123,14 +125,16 @@ class MailSearch:
     def _load_optional_rerankers(self) -> None:
         if not SEMANTIC_ENABLED or not VECTOR_INDEX_PATH.is_file():
             return
-        model_snapshot = MODEL_CACHE_PATH / "models--Qdrant--paraphrase-multilingual-MiniLM-L12-v2-onnx-Q" / "snapshots"
-        if not list(model_snapshot.glob("*/model_optimized.onnx")):
+        if not list(MODEL_CACHE_PATH.glob("models--*/snapshots/*")):
             return
         try:
             import numpy as np
             from fastembed import TextEmbedding
 
             index = np.load(VECTOR_INDEX_PATH, allow_pickle=False)
+            if "model" in index.files and str(index["model"]) != SEMANTIC_MODEL:
+                print("Dense retrieval disabled: vector index was built with a different model")
+                return
             doc_ids = index["doc_ids"].astype(str, copy=False)
             vectors = index["vectors"].astype(np.float32, copy=False)
             if set(doc_ids) != set(self.by_id):
@@ -140,11 +144,10 @@ class MailSearch:
             for mailbox in self.mailbox_doc_counts:
                 indices = np.flatnonzero(mailbox_ids == mailbox)
                 self.dense_by_mailbox[mailbox] = (doc_ids[indices], vectors[indices])
-            self.dense_model = TextEmbedding(
-                model_name=SEMANTIC_MODEL,
-                cache_dir=str(MODEL_CACHE_PATH),
-                threads=int(os.environ.get("MAIL_QUERY_EMBED_THREADS", "1")),
-            )
+            embedding_args = {"model_name": SEMANTIC_MODEL, "cache_dir": str(MODEL_CACHE_PATH)}
+            if not SEMANTIC_MODEL.startswith("minishlab/potion-"):
+                embedding_args["threads"] = int(os.environ.get("MAIL_QUERY_EMBED_THREADS", "1"))
+            self.dense_model = TextEmbedding(**embedding_args)
             if RANKER_PATH.is_file():
                 try:
                     import lightgbm as lgb
