@@ -13,6 +13,12 @@ class ReceiptDateTest(TestCase):
             ReceiptQuery("чеки", date(2025, 12, 31)),
         )
 
+    def test_plural_arrival_word_anchors_receipt_date(self):
+        self.assertEqual(
+            parse_receipt_query("Какие заказы пришли вчера?", self.reference),
+            ReceiptQuery("Какие заказы", date(2025, 12, 31)),
+        )
+
     def test_supported_absolute_formats(self):
         for date_phrase in ("20 ноября 2025 года", "20 ноября", "20.11.2025", "2025-11-20"):
             with self.subTest(date_phrase=date_phrase):

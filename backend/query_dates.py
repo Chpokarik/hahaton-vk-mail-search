@@ -22,7 +22,7 @@ DATE_RE = re.compile(
     re.IGNORECASE,
 )
 DATE_CONTEXT = re.compile(
-    r"\b(?:полученн\w*|получени[еяюи]\w*|пришедш\w*|поступивш\w*|приш[её]л\w*)\s*$",
+    r"\b(?:полученн\w*|получени[еяюи]\w*|пришедш\w*|поступивш\w*|пришл\w*|приш[её]л\w*)\s*$",
     re.IGNORECASE,
 )
 RANGE_PREFIX = re.compile(r"\b(?:с|со|до|после|между|раньше|позже|по)\s*$", re.IGNORECASE)
@@ -78,4 +78,4 @@ def parse_receipt_query(text: str, reference: date | None) -> ReceiptQuery:
         return ReceiptQuery(query)
 
     remaining = f"{query[:context.start()]} {query[match.end():]}"
-    return ReceiptQuery(re.sub(r"\s+", " ", remaining).strip(" ,.;"), day)
+    return ReceiptQuery(re.sub(r"\s+", " ", remaining).strip(" ,.;?!"), day)

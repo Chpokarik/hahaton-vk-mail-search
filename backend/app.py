@@ -490,10 +490,15 @@ def messages(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     preview: bool = False,
+    before: date | None = None,
 ) -> dict[str, Any]:
-    mailbox_docs = search_engine.mailbox_documents.get(synthetic_user)
-    if not mailbox_docs:
+    all_mailbox_docs = search_engine.mailbox_documents.get(synthetic_user)
+    if not all_mailbox_docs:
         raise HTTPException(status_code=404, detail="Unknown mailbox")
+    mailbox_docs = (
+        [doc for doc in all_mailbox_docs if doc.get("doc_dt") and doc["doc_dt"][:10] <= before.isoformat()]
+        if before else all_mailbox_docs
+    )
     page = mailbox_docs[offset : offset + limit]
     if preview:
         messages = []

@@ -1,44 +1,44 @@
-# VK Mail Search
+# Почта VK
 
-Hackathon prototype for finding a letter in a mailbox from a natural-language request.
+Прототип почтового сервиса для хакатона. Позволяет находить письма в выбранном ящике по запросу обычным языком.
 
-- [Как всё работает](docs/architecture.md)
+- [Как устроено приложение](docs/architecture.md)
 - [Сценарий выступления и ответы жюри](docs/presentation.md)
 
-## Run the web demo
+## Запуск локального демо
 
-Start the backend using the instructions below. If the organizers’ archive is in Downloads, run the following command from `backend/` with the virtual environment activated:
+Сначала запустите backend. Если архив организаторов находится в папке «Загрузки», выполните команду из каталога `backend/` при активированном виртуальном окружении:
 
 ```bash
 MAIL_DATASET_ZIP="$HOME/Downloads/mipt_mail_search_participants.zip" uvicorn app:app --port 8000
 ```
 
-In a second terminal, from the repository root, use Node.js 22.12+:
+Во втором терминале из корня репозитория запустите интерфейс. Нужен Node.js версии 22.12 или новее:
 
 ```bash
 npm --prefix frontend ci
 npm --prefix frontend run dev
 ```
 
-Open the URL Vite prints (normally `http://localhost:5173`). For the live demo, in the largest mailbox:
+Откройте адрес, который выведет Vite (обычно `http://localhost:5173`). Для демонстрации откройте самый большой почтовый ящик:
 
-1. Click «Заказы от 20 ноября 2026». The results show the day parsed from the query.
-2. Set «Поиск до» to 21 November 2026 and search for «Какие заказы пришли вчера?». It resolves to the same receipt date.
-3. Open a result and click the bookmark icon. Open «Избранное» to find the letter again. Bookmarks are scoped to the chosen mailbox and stored in the current browser.
+1. Нажмите «Заказы, полученные 20 ноября 2026». В результатах отобразится дата, распознанная в запросе.
+2. Установите дату поиска 21 ноября 2026 года и введите «Какие заказы пришли вчера?». Приложение определит ту же дату получения — 20 ноября.
+3. Откройте письмо и нажмите значок закладки. Оно появится в разделе «Избранное». Закладки хранятся отдельно для каждого ящика в текущем браузере.
 
-The default API address is `http://localhost:8000`. To use a backend on another laptop, copy `frontend/.env.example` to `frontend/.env.local`, set `VITE_API_BASE_URL` to a reachable URL such as `http://192.168.1.10:8000`, and restart Vite. Run Uvicorn with `--host 0.0.0.0` when using a backend across the local network.
+По умолчанию интерфейс подключается к API по адресу `http://localhost:8000`. Чтобы подключить backend на другом компьютере, скопируйте `frontend/.env.example` в `frontend/.env.local`, укажите в `VITE_API_BASE_URL` доступный адрес, например `http://192.168.1.10:8000`, и перезапустите Vite. Для работы по локальной сети запускайте Uvicorn с параметром `--host 0.0.0.0`.
 
-### Build for static hosting
+### Сборка для размещения на статическом хостинге
 
 ```bash
 VITE_API_BASE_URL=https://your-api.example npm --prefix frontend run build
 ```
 
-Publish `frontend/dist/` to a static host such as GitHub Pages. The API needs separate hosting with HTTPS and access to the dataset archive. Vite embeds the API URL at build time.
+Разместите содержимое `frontend/dist/` на статическом хостинге, например GitHub Pages. Для API потребуется отдельный сервер с HTTPS и доступом к архиву писем. Адрес API встраивается в интерфейс во время сборки.
 
-### Serve the whole demo from one host
+### Запуск интерфейса и API на одном сервере
 
-Build a same-origin frontend and serve it alongside the API:
+Соберите интерфейс так, чтобы он использовал тот же адрес, что и API, затем запустите приложение:
 
 ```bash
 VITE_API_BASE_URL=/ npm --prefix frontend run build
@@ -46,34 +46,35 @@ cd backend
 MAIL_SERVE_FRONTEND=1 MAIL_DATASET_ZIP="/path/to/mipt_mail_search_participants.zip" uvicorn app:app --port 8780
 ```
 
-Use port 8780 as the origin for your HTTPS host. For a temporary demo, run this in a separate terminal:
+Используйте порт 8780 как адрес HTTPS-сервера. Для временного демо выполните в отдельном терминале:
 
 ```bash
 ssh -o ServerAliveInterval=30 -R 80:127.0.0.1:8780 nokey@localhost.run
 ```
 
-Use the HTTPS URL printed by SSH. Keep the tunnel and Uvicorn running during the demo. The free domain can rotate. The ZIP remains on the origin machine.
+Откройте HTTPS-адрес, который выведет SSH. На время показа оставьте туннель и Uvicorn запущенными. Бесплатный домен может измениться. ZIP-архив остаётся на компьютере, где работает сервер.
 
-## Current backend
+## Поисковый backend
 
-The search engine only treats a date as a receipt date when the wording anchors it to arrival/receipt. Event dates inside a query remain part of the topic, and date ranges are not collapsed to one day. When a receipt day is present, it filters candidate mail and semantic vectors to that mailbox and day before ranking. BM25, local 128M Potion embeddings, a topic ranker, and LightGBM contribute to the final order. The topic ranker favors requested words in the subject and opening lines, phrase coverage, and close-together matches; it also uses a cautious shared-prefix rule for long Russian lemmas. Without a receipt-day filter, BM25 candidates and up to 150 candidates from local Potion embeddings are combined and reranked with LightGBM. Search inference is local, and the `/search` input contract is unchanged.
+Поисковый движок считает дату датой получения письма, только если запрос связывает её с получением или поступлением письма. Даты событий внутри запроса остаются частью темы поиска; диапазоны дат не сводятся к одному дню. Если запрос содержит дату получения, письма и семантические векторы сначала отбираются по выбранному ящику и этой дате, а затем ранжируются.
 
-The public development set contains 99 queries and 565 relevance labels. All 99 queries include a receipt date, so this set measures date-constrained retrieval much more than everyday undated semantic search.
+В итоговый порядок вносят вклад BM25, локальные мультиязычные эмбеддинги Potion 128M, тематический ранжировщик и LightGBM. Тематический ранжировщик учитывает совпадения в теме и начале письма, покрытие фраз и близость совпавших слов; для длинных русских лемм также применяется осторожное сравнение общих приставок. Без фильтра по дате получения BM25 объединяется с результатами до 150 кандидатов локальной модели Potion, после чего LightGBM уточняет порядок. Поиск выполняется локально; формат запроса `/search` не менялся.
 
-| Mode | Recall@10 | Recall@100 | nDCG@10 | MRR@10 |
+В открытом наборе для разработки — 99 запросов и 565 оценок релевантности. Во всех 99 запросах указана дата получения, поэтому этот набор лучше оценивает поиск с датой, чем обычный семантический поиск без даты.
+
+| Режим | Recall@10 | Recall@100 | nDCG@10 | MRR@10 |
 | --- | ---: | ---: | ---: | ---: |
-| BM25 baseline | 0.5239 | 0.8637 | 0.3665 | 0.3582 |
-| Previous BM25 date-aware search | 0.8879 | 0.9923 | 0.9304 | 0.9503 |
-| Combined date-constrained hybrid and topic ranking | 0.9305 | 1.0000 | 0.9890 | 0.9949 |
+| Базовый BM25 | 0.5239 | 0.8637 | 0.3665 | 0.3582 |
+| Предыдущий BM25 с учётом даты | 0.8879 | 0.9923 | 0.9304 | 0.9503 |
+| Гибридный поиск с учётом даты и тематическим ранжированием | 0.9305 | 1.0000 | 0.9890 | 0.9949 |
 
-Across 35 public queries from two mailboxes held out while comparing topic-ranking weights, nDCG@10 rose from 0.8570 to 0.9843. This is still public-query validation, not the organizers' private benchmark.
+На 35 открытых запросах из двух ящиков, отложенных при подборе весов тематического ранжировщика, nDCG@10 вырос с 0.8570 до 0.9843. Это проверка на открытых запросах, а не на закрытом тесте организаторов.
 
-The organizers measure final quality and latency on their private benchmark. The combined build completed 495 requests with 64 concurrent clients and no errors. Local end-to-end HTTP p99 was 274 ms for receipt-date queries and 758 ms for the same public queries with receipt phrases removed. A small, manually labeled no-date diagnostic set gives nDCG@10 0.6100 for hybrid vs 0.6113 for BM25, so quality without dates still needs improvement. An event-date-only case is not filtered to the wrong day; a query with both an event and receipt date raises its target from legacy rank 24 to rank 1. See [measurement details](docs/architecture.md#6-как-оцениваем).
+Организаторы проверят итоговое качество и скорость на своём закрытом наборе. Гибридная версия выполнила 495 запросов при 64 одновременных клиентах без ошибок. Локальный p99 HTTP-запросов составил 274 мс для поиска по дате получения и 758 мс для тех же открытых запросов без фраз, указывающих на получение. На небольшом вручную размеченном наборе запросов без даты nDCG@10 составляет 0.6100 для гибридного поиска и 0.6113 для BM25; качество таких запросов ещё предстоит улучшить. Запрос только с датой события не фильтруется по ошибочному дню; для запроса одновременно с датой события и датой получения целевое письмо поднялось с 24-го на 1-е место. Подробности — в разделе [«Как оцениваем»](docs/architecture.md#6-как-оцениваем).
 
-## Start the backend
+## Запуск backend
 
-Keep `mipt_mail_search_participants.zip` one directory above this repository, or set `MAIL_DATASET_ZIP` to another path.
-Use Python 3.12 for the setup below.
+Положите `mipt_mail_search_participants.zip` на уровень выше репозитория или задайте другой путь через `MAIL_DATASET_ZIP`. Для приведённых ниже команд используйте Python 3.12.
 
 ```bash
 cd backend
@@ -83,9 +84,9 @@ pip install -r requirements.txt
 uvicorn app:app --reload --port 8000
 ```
 
-Open `http://localhost:8000/docs` for interactive API documentation.
+Интерактивная документация API доступна по адресу `http://localhost:8000/docs`.
 
-## Search API
+## API поиска
 
 `POST /search`
 
@@ -98,32 +99,32 @@ Open `http://localhost:8000/docs` for interactive API documentation.
 }
 ```
 
-The response contains `count`, `received_on` (the extracted receipt date or `null`), and `results` with `doc_id`, `date`, `subject`, `snippet`, and `score`. `synthetic_user` is required so results stay within the selected mailbox. `query_date` is an inclusive upper bound and the reference day for relative dates. When omitted, relative dates use the server's current day. Letters with unknown receipt dates can appear in general results, and an explicit receipt day requires a known matching date.
+В ответе содержатся `count`, `received_on` (распознанная дата получения или `null`) и `results` с полями `doc_id`, `date`, `subject`, `snippet` и `score`. Поле `synthetic_user` обязательно: результаты ограничиваются выбранным ящиком. `query_date` задаёт включительную верхнюю границу и дату отсчёта для относительных дат. Если она не указана, относительные даты отсчитываются от текущей даты на сервере. В общие результаты могут попасть письма без даты получения; при явно указанной дате получения остаются только письма с известной подходящей датой.
 
-Other routes:
+Другие маршруты:
 
-- `GET /health` — service status, indexed document count, and enabled ranking modes.
-- `GET /mailboxes` — available synthetic mailboxes and message counts.
-- `GET /mailboxes/{synthetic_user}/messages?offset=0&limit=50` — inbox page. Use `preview=true` for lightweight inbox previews.
-- `GET /mailboxes/{synthetic_user}/messages/{doc_id}` — full message in the selected mailbox. With an older backend, the frontend retrieves it through the paginated inbox.
-- `GET /search?q=...&synthetic_user=...` — simple browser-friendly search.
+- `GET /health` — состояние сервиса, число проиндексированных писем и доступные режимы ранжирования.
+- `GET /mailboxes` — список почтовых ящиков и число писем в каждом.
+- `GET /mailboxes/{synthetic_user}/messages?offset=0&limit=50` — страница входящих. Для облегчённых превью добавьте `preview=true`.
+- `GET /mailboxes/{synthetic_user}/messages/{doc_id}` — полное письмо в выбранном ящике. Если старый backend не поддерживает этот маршрут, интерфейс найдёт письмо через постраничную загрузку входящих.
+- `GET /search?q=...&synthetic_user=...` — простой поиск, который можно вызвать из браузера.
 
-The frontend can call the API directly from a local development server; CORS is enabled.
+Локальный интерфейс обращается к API напрямую; CORS включён.
 
-## Evaluate the integrated engine
+## Оценка поискового движка
 
-Run from `backend/` after installing the backend dependencies:
+После установки зависимостей backend выполните команды из каталога `backend/`:
 
 ```bash
 python evaluate.py --suite both --latency-repeats 5 --worst 10
 python evaluate.py --suite both --mode lexical --latency-repeats 5
 ```
 
-This reports Recall@10, Recall@100, nDCG@10, MRR@10, and in-process p50/p95/p99 latency separately for public queries and the diagnostic controls, each split by presence of a parsed receipt date. The control labels are manually curated and must not be treated as official benchmark scores.
+Команды выводят Recall@10, Recall@100, nDCG@10, MRR@10 и локальную задержку обработки p50/p95/p99 для открытых запросов и диагностических контрольных примеров. Показатели разделяются по наличию распознанной даты получения. Контрольные метки размечены вручную и не являются официальными результатами организаторов.
 
-## Enable hybrid retrieval
+## Включение гибридного поиска
 
-Use the same archive for index generation and API startup. Install the optional dependencies, build the index once, and restart the API:
+Используйте один и тот же архив при создании индекса и запуске API. Установите дополнительные зависимости, один раз постройте индекс и перезапустите API:
 
 ```bash
 cd backend
@@ -131,24 +132,24 @@ pip install -r requirements-search-lab.txt
 python build_semantic_index.py
 ```
 
-The build downloads the 128M embedding model and creates `backend/.cache/semantic-index.npz`. The corpus, model weights, and generated vectors stay outside Git. On the provided archive, the index contains 25,832 text chunks. `GET /health` reports `semantic_search` and `reranker` readiness. Set `MAIL_SEMANTIC_ENABLED=0` to run date-aware BM25 without the optional model.
+Сборка скачивает мультиязычную модель эмбеддингов 128M и создаёт `backend/.cache/semantic-index.npz`. Архив писем, веса модели и векторный индекс остаются вне Git. Для предоставленного архива индекс содержит 25 832 текстовых фрагмента. В `GET /health` отображается готовность `semantic_search` и `reranker`. Укажите `MAIL_SEMANTIC_ENABLED=0`, чтобы запустить BM25 с учётом даты без дополнительной модели.
 
-The included LightGBM model was trained on the public relevance labels. Reproduce the undated hybrid experiment with receipt-date parsing disabled to compare the reranker against the lexical baseline. The experiment trains separate models for held-out queries and mailboxes.
+Модель LightGBM обучена на открытых оценках релевантности. Чтобы повторить эксперимент гибридного поиска без дат, отключите распознавание дат получения. В эксперименте используются отдельные модели для отложенных запросов и почтовых ящиков:
 
 ```bash
 MAIL_RECEIPT_DATES=0 python reranker_experiment.py --depth 150
 ```
 
-Stress the running API with both the original workload and a workload with the explicit receipt-date phrases removed. The second command measures performance of the hybrid path:
+Проверьте работающий API на исходном наборе нагрузки и на запросах без явных фраз, указывающих на получение письма. Вторая команда измеряет гибридный режим:
 
 ```bash
 python stress_http.py --workers 8 32 64 --repeats 5
 python stress_http.py --workers 8 32 64 --repeats 5 --without-receipt-dates
 ```
 
-## Dataset
+## Датасет
 
-The ZIP archive is deliberately not stored in Git. It contains pseudonymized emails, public queries, and qrels. Keep it outside the repository and never commit it.
+ZIP-архив намеренно не хранится в Git. Он содержит обезличенные письма, открытые запросы и оценки релевантности. Храните его вне репозитория и не добавляйте в Git.
 
 ## Сценарий защиты
 
@@ -156,20 +157,20 @@ The ZIP archive is deliberately not stored in Git. It contains pseudonymized ema
 
 **0:00–0:15. Задача.** «В почте мы помним смысл письма и когда оно пришло. Точная тема обычно забывается. Мы сделали поиск, которому можно написать: “Какие заказы пришли вчера?”»
 
-**0:15–0:45. Живой показ.** Откройте самый большой ящик. Поставьте «Поиск до» на 21 ноября 2026 года. Введите «Какие заказы пришли вчера?». Покажите, что приложение само вычислило 20 ноября, и откройте одно из двух писем. Добавьте его в «Избранное» и покажите, как быстро к нему вернуться. Если нужно сэкономить время, нажмите готовый пример «Заказы от 20 ноября 2026».
+**0:15–0:45. Живой показ.** Откройте самый большой ящик. Поставьте «Поиск до» на 21 ноября 2026 года. Введите «Какие заказы пришли вчера?». Покажите, что приложение само вычислило 20 ноября, и откройте одно из двух писем. Добавьте его в «Избранное» и покажите, как быстро к нему вернуться. Если нужно сэкономить время, нажмите пример «Заказы, полученные 20 ноября 2026».
 
-**0:45–1:05. Как устроен поиск.** «Сначала определяем ящик и дату. Если день указан в запросе, ищем только среди полученных в этот день писем и уточняем их порядок по совпадениям в теме и в начале письма. Учитываем родственные формы слов вроде «погрузка» и «погрузить». Если точного дня нет, объединяем результаты поиска по словам и поискового индекса на эмбеддингах, а LightGBM уточняет порядок. Обработка выполняется на сервере, прямо на машине с архивом».
+**0:45–1:05. Как устроен поиск.** «Сначала определяем ящик и дату. Если день указан в запросе, ищем только среди полученных в этот день писем и уточняем их порядок по совпадениям в теме и в начале письма. Учитываем родственные формы слов вроде “погрузка” и “погрузить”. Если точного дня нет, объединяем результаты поиска по словам и семантического индекса, а LightGBM уточняет порядок. Обработка выполняется на сервере, прямо на машине с архивом».
 
-**1:05–1:25. Доказательство.** «На 99 публичных запросах Recall@10 вырос с 88,8% до 93,1%, а nDCG@10 — с 0,930 до 0,989. Recall@100 достиг 100%. Эти цифры получили на публичных запросах с датами. Под нагрузкой в 64 клиента локальный p99 составил 97–319 мс на этих запросах и 491–495 мс на нагрузке для гибридного режима. Финальный замер проведут организаторы».
+**1:05–1:25. Результаты.** «На 99 открытых запросах Recall@10 вырос с 88,8% до 93,1%, а nDCG@10 — с 0,930 до 0,989. Recall@100 достиг 100%. Эти цифры получены на запросах с датой. При 64 клиентах локальный p99 составил 97–319 мс для таких запросов и 491–495 мс для нагрузки гибридного режима. Финальный замер проведут организаторы».
 
 **1:25–1:30. Финал.** «Прототип работает в браузере. На ноутбуке список и письмо видны рядом, на телефоне письмо открывается во весь экран. Для показа есть HTTPS-ссылка и локальная копия».
 
-### Что могут спросить
+### Возможные вопросы
 
 - **Что здесь умного?** Запрос раскладывается на тему и дату получения. «Вчера» зависит от даты отсчёта. Гибридный режим сопоставляет запрос с текстом, даже когда формулировки отличаются.
-- **Откуда цифры про гибрид?** В отдельном эксперименте с удержанием целых ящиков LightGBM дал Recall@10 54,9% и nDCG@10 0,466. Сильный прирост в итоговой таблице относится к запросам, где можно выделить день. Это два разных замера.
-- **Как считали скорость?** Замеряем время ответа локального HTTP API на повторяемой нагрузке. В команды выше входят исходные запросы и отдельная нагрузка для гибридного пути.
-- **Почему модель разрешена?** Мультиязычная Potion содержит 128 млн параметров. Веса скачиваются при сборке индекса. Запросы и тексты обрабатываются локально.
+- **Откуда цифры про гибрид?** В отдельном эксперименте с отложенными ящиками LightGBM дал Recall@10 54,9% и nDCG@10 0,466. Большой прирост в итоговой таблице относится к запросам, где можно выделить день. Это два разных замера.
+- **Как считали скорость?** Измеряли время ответа локального HTTP API на повторяемой нагрузке. В команды выше входят исходные запросы и отдельная нагрузка для гибридного режима.
+- **Почему модель разрешена?** Мультиязычная Potion содержит 128 млн параметров. Веса скачиваются при сборке индекса. Запросы и письма обрабатываются локально.
 - **Что будет без весов?** Работает BM25 с русской морфологией и определением дня. В `/health` видно, какой режим доступен.
-- **Какой следующий шаг?** Расширить распознавание диапазонов дат и сделать отдельный оценочный набор для запросов без даты.
-- **Пример запроса без даты.** В ящике `box-12259a301ee2` введите «Как оплатить муниципальное жильё». Гибрид выводит вверх счета за найм муниципального фонда.
+- **Какой следующий шаг?** Расширить распознавание диапазонов дат и создать отдельный оценочный набор для запросов без даты.
+- **Пример запроса без даты.** В ящике `box-12259a301ee2` введите «Как оплатить муниципальное жильё». Гибридный поиск поднимает выше письма со счетами за муниципальный фонд.
