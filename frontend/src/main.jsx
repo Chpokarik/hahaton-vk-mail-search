@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  Archive, Bookmark, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Inbox,
+  Bookmark, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Inbox,
   LoaderCircle, Mail, MailOpen, Search, X,
 } from 'lucide-react'
 import '@fontsource-variable/inter'
-import '@fontsource-variable/manrope'
 import { api } from './api'
-import { colorIndex, initials, mailContent, mailDate, number, preview } from './mail'
+import { initials, mailContent, mailDate, number, preview } from './mail'
 import { loadSaved, saveLetters, savedSummary } from './saved'
 import './style.css'
 
@@ -50,85 +49,72 @@ function Notice({ icon: Icon = Inbox, title, children, action, actionText }) {
   )
 }
 
-function Sidebar({ boxes, active, health, onChange }) {
-  const [expanded, setExpanded] = useState(false)
-  const shown = expanded ? boxes : boxes.slice(0, 5)
-  const visible = shown.some((box) => box.synthetic_user === active)
-    ? shown
-    : [...shown, ...boxes.filter((box) => box.synthetic_user === active)]
-
-  const connection = { ready: 'Поиск готов', error: 'Почта недоступна', loading: 'Подключаем почту' }[health.status]
-
+function Sidebar({ boxes, active, onChange }) {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark"><Mail size={22} strokeWidth={2.1} /></div>
+        <Mail aria-hidden="true" size={24} strokeWidth={1.6} />
         <span>Почта</span>
       </div>
-      <nav className="accounts" aria-label="Почтовые ящики">
-        <div className="side-heading"><span>Ящики</span><span>{boxes.length || ''}</span></div>
-        <div className="account-list">
-          {visible.map(({ synthetic_user, count }) => (
-            <button
-              key={synthetic_user}
-              className="account"
-              aria-current={active === synthetic_user ? 'true' : undefined}
-              onClick={() => onChange(synthetic_user)}
-              title={synthetic_user}
-            >
-              <span className={`account-icon tint-${colorIndex(synthetic_user)}`}><Archive size={15} strokeWidth={1.85} /></span>
-              <span className="account-label">{synthetic_user}</span>
-              <span className="account-count">{number.format(count)}</span>
-            </button>
-          ))}
-        </div>
-        {boxes.length > 5 && (
-          <button className="expand" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>
-            <ChevronDown size={16} /> {expanded ? 'Свернуть список' : 'Все ящики'}
-          </button>
-        )}
-      </nav>
       {boxes.length > 0 && (
-        <label className="mobile-account">
-          <span className="sr-only">Почтовый ящик</span>
-          <select value={active} onChange={(event) => onChange(event.target.value)}>
-            {boxes.map(({ synthetic_user }) => <option key={synthetic_user}>{synthetic_user}</option>)}
-          </select>
-          <ChevronDown size={16} />
-        </label>
+        <>
+          <nav className="accounts" aria-label="Почтовые ящики">
+            <div className="side-heading">Почтовые ящики</div>
+            <div className="account-list">
+              {boxes.map(({ synthetic_user, count }, index) => (
+                <button
+                  key={synthetic_user}
+                  className="account"
+                  aria-current={active === synthetic_user ? 'true' : undefined}
+                  onClick={() => onChange(synthetic_user)}
+                >
+                  <span className="account-label">
+                    <span>Ящик {index + 1}</span>
+                    <small>{synthetic_user}</small>
+                  </span>
+                  <span className="account-count">{number.format(count)}</span>
+                </button>
+              ))}
+            </div>
+          </nav>
+          <label className="mobile-account">
+            <span className="sr-only">Почтовый ящик</span>
+            <select value={active} onChange={(event) => onChange(event.target.value)}>
+              {boxes.map(({ synthetic_user }, index) => (
+                <option key={synthetic_user} value={synthetic_user}>Ящик {index + 1} · {synthetic_user}</option>
+              ))}
+            </select>
+            <ChevronDown size={16} aria-hidden="true" />
+          </label>
+        </>
       )}
-      <div className="connection" role="status">
-        <span className={`connection-dot ${health.status}`} />
-        <div>
-          <span>{connection}</span>
-          {health.status === 'ready' && (
-            <small>{number.format(health.data.documents)} писем</small>
-          )}
-          {health.status === 'error' && <button className="text-button" onClick={health.retry}>Перепроверить</button>}
-        </div>
-      </div>
     </aside>
   )
 }
 
-function SearchPanel({ draft, setDraft, onSearch }) {
+function SearchPanel({ draft, setDraft, onSearch, onReveal }) {
   const inputRef = useRef(null)
 
   useEffect(() => {
     function focusSearch(event) {
       if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault()
-        inputRef.current?.focus()
+        if (!inputRef.current?.getClientRects().length) {
+          onReveal()
+          requestAnimationFrame(() => inputRef.current?.focus())
+          return
+        }
+        inputRef.current.focus()
       }
     }
     window.addEventListener('keydown', focusSearch)
     return () => window.removeEventListener('keydown', focusSearch)
-  }, [])
+  }, [onReveal])
 
   return (
     <section className="search-panel" aria-labelledby="search-heading">
       <div className="search-content">
-        <h1 id="search-heading">Поиск по почте</h1>
+        <h1 className="sr-only" id="search-heading">Поиск по почте</h1>
         <form className="search-form" role="search" onSubmit={(event) => { event.preventDefault(); onSearch(draft) }}>
           <Search size={21} className="search-icon" aria-hidden="true" />
           <input
@@ -155,11 +141,10 @@ function SearchPanel({ draft, setDraft, onSearch }) {
   )
 }
 
-function Avatar({ content, id, large = false }) {
-  const tint = colorIndex(content.hasSender ? content.sender : id)
+function SenderMark({ content }) {
   return (
-    <span className={`avatar tint-${tint}${large ? ' avatar-large' : ''}`} aria-hidden="true">
-      {content.hasSender ? initials(content.sender) : <Mail size={large ? 21 : 17} strokeWidth={1.8} />}
+    <span className="sender-mark" aria-hidden="true">
+      {content.hasSender ? initials(content.sender) : <Mail size={17} strokeWidth={1.6} />}
     </span>
   )
 }
@@ -169,7 +154,6 @@ function MailRow({ item, selected, onOpen }) {
   return (
     <li>
       <button className="mail-row" aria-current={selected ? 'true' : undefined} onClick={onOpen}>
-        <Avatar content={content} id={item.doc_id} />
         <span className="row-content">
           <span className="row-meta">
             <span className="sender">{content.sender}</span>
@@ -187,7 +171,11 @@ function Reader({ selected, detail, onClose, panelRef, saved, onSave }) {
   if (!selected) {
     return (
       <section className="panel reader reader-empty" aria-label="Просмотр письма">
-        <Notice icon={MailOpen} title="Выберите письмо для просмотра" />
+        <div className="reader-hint">
+          <MailOpen size={33} strokeWidth={1.25} aria-hidden="true" />
+          <p>Выберите письмо</p>
+          <span>Стрелки перемещают фокус по списку, Enter открывает письмо.</span>
+        </div>
       </section>
     )
   }
@@ -202,13 +190,15 @@ function Reader({ selected, detail, onClose, panelRef, saved, onSave }) {
           <button className="icon-button save-button" onClick={() => onSave(mail || selected)} aria-pressed={saved} aria-label={saved ? 'Убрать из избранного' : 'Сохранить в избранное'} title={saved ? 'Убрать из избранного' : 'Сохранить в избранное'}>
             <Bookmark size={19} fill={saved ? 'currentColor' : 'none'} />
           </button>
-          <button className="icon-button" onClick={onClose} aria-label="Закрыть письмо"><X size={19} /></button>
+          <button className="icon-button close-letter" onClick={onClose} aria-label="Закрыть письмо">
+            <X size={19} /><span>К письмам</span>
+          </button>
         </div>
       </div>
       <article className="letter" key={selected.doc_id}>
         <h2>{content.subject}</h2>
         <div className="letter-meta">
-          <Avatar content={content} id={selected.doc_id} large />
+          <SenderMark content={content} />
           <div><strong>{content.sender}</strong><span>{mailDate((mail || selected).date, true)}</span></div>
         </div>
         {mail && <div className="letter-text">{content.text || 'Письмо без текста.'}</div>}
@@ -272,10 +262,22 @@ function Workspace({ mailbox }) {
     changePage(0)
   }
 
+  const revealSearch = useCallback(() => setSelected(null), [])
+
   const closeLetter = useCallback(() => {
     setSelected(null)
     requestAnimationFrame(() => openButton.current?.focus({ preventScroll: true }))
   }, [])
+
+  function moveListFocus(event) {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+    const current = event.target.closest('.mail-row')
+    if (!current) return
+    const row = current.parentElement
+    const neighbor = event.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling
+    event.preventDefault()
+    neighbor?.querySelector('.mail-row')?.focus()
+  }
 
   useEffect(() => {
     if (!selected) return
@@ -298,14 +300,13 @@ function Workspace({ mailbox }) {
   const total = rows.data?.total ?? mailbox.count
   const count = rows.data?.count
   const receivedOn = rows.data?.received_on
-  const order = showSaved ? 'Недавно сохранённые' : query ? 'По релевантности' : 'Сначала новые'
   const title = showSaved ? 'Избранное' : query ? 'Результаты поиска' : 'Входящие'
   const showCount = showSaved || !query || rows.status === 'ready'
   const visibleCount = showSaved ? saved.length : query ? count : total
 
   return (
     <div className={selected ? 'mail-view has-letter' : 'mail-view'}>
-      <SearchPanel draft={draft} setDraft={setDraft} onSearch={search} />
+      <SearchPanel draft={draft} setDraft={setDraft} onSearch={search} onReveal={revealSearch} />
       <div className={`workspace${selected ? ' letter-visible' : ''}`}>
         <section className="panel inbox" aria-labelledby="inbox-heading">
           <div className="inbox-heading">
@@ -340,13 +341,14 @@ function Workspace({ mailbox }) {
               </div>}
             </div>
           </div>
-          <div className="list-meta">
-            <span>{!showSaved && query ? <span className="active-query" title={query}>«{query}»</span> : 'Отправитель и тема'}</span>
-            <span>{order}</span>
-          </div>
-          {receivedOn && <div className="parsed-date"><CalendarDays size={15} /> Получено {mailDate(receivedOn, true)}</div>}
+          {!showSaved && query && (
+            <div className="list-meta">
+              <span className="active-query" title={query}>«{query}»</span>
+              {receivedOn && <span className="parsed-date">Получено {mailDate(receivedOn, true)}</span>}
+            </div>
+          )}
           {storageFailed && <div className="storage-state" role="status">Браузер заблокировал сохранение. Избранное доступно до обновления страницы.</div>}
-          <div className="mail-list" ref={listRef} aria-busy={rows.status === 'loading'}>
+          <div className="mail-list" ref={listRef} onKeyDown={moveListFocus} aria-busy={rows.status === 'loading'}>
             {rows.status === 'loading' && <Notice icon={LoaderCircle} title={query ? 'Ищем письма' : 'Загружаем письма'} />}
             {rows.status === 'error' && <Notice title={query ? 'Поиск не удался' : 'Письма не загрузились'} action={rows.retry} actionText="Повторить">Проверьте подключение к API.</Notice>}
             {rows.status === 'ready' && !items.length && (
@@ -393,7 +395,6 @@ function Workspace({ mailbox }) {
 }
 
 function App() {
-  const health = useRequest(api.health)
   const mailboxes = useRequest(api.mailboxes)
   const [active, setActive] = useState('')
   const boxes = (mailboxes.data?.mailboxes ?? []).slice().sort((a, b) => b.count - a.count || a.synthetic_user.localeCompare(b.synthetic_user))
@@ -402,13 +403,13 @@ function App() {
   return (
     <div className="app">
       <a className="skip-link" href="#mail-main">К почте</a>
-      <Sidebar boxes={boxes} active={current?.synthetic_user || ''} health={health} onChange={setActive} />
+      <Sidebar boxes={boxes} active={current?.synthetic_user || ''} onChange={setActive} />
       <main className="main" id="mail-main">
         {current ? <Workspace key={current.synthetic_user} mailbox={current} /> : (
           <section className="panel service-state" aria-label="Состояние почты">
             {mailboxes.status === 'loading' && <Notice icon={LoaderCircle} title="Подключаемся к почте" />}
             {mailboxes.status === 'error' && (
-              <Notice icon={Mail} title="Не удалось загрузить ящики" action={() => { mailboxes.retry(); health.retry() }} actionText="Повторить подключение">
+              <Notice icon={Mail} title="Не удалось загрузить ящики" action={mailboxes.retry} actionText="Повторить подключение">
                 Проверьте, что бэкенд запущен и адрес VITE_API_BASE_URL доступен из браузера.
               </Notice>
             )}

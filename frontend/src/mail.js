@@ -36,9 +36,6 @@ export function initials(name) {
   return name.match(/[\p{L}\d]+/gu)?.slice(0, 2).map((word) => word[0].toUpperCase()).join('') || '?'
 }
 
-export function colorIndex(value) {
-  return [...value].reduce((sum, character) => sum + character.codePointAt(0), 0) % 5
-}
 
 const dateFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
 const fullDateFormat = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })

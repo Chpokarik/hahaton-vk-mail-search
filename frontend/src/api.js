@@ -22,7 +22,6 @@ function mailboxPath(mailbox) {
 }
 
 export const api = {
-  health: (signal) => request('/health', { signal }),
   mailboxes: (signal) => request('/mailboxes', { signal }),
   inbox: (mailbox, offset, limit, signal) =>
     request(`${mailboxPath(mailbox)}?offset=${offset}&limit=${limit}`, { signal }),
