@@ -19,7 +19,7 @@ import numpy as np
 from fastembed import TextEmbedding
 
 from app import STOPWORDS, search_engine, tokenize
-from search_features import FEATURE_NAMES, CandidateFeatures
+from search_features import CandidateFeatures, FEATURE_NAMES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,9 +70,13 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
         query_id = query["query_id"]
         mailbox = query["synthetic_user"]
         query_day = date.fromisoformat(query["query_date"]) if query.get("query_date") else None
-        lexical_rows = search_engine.search_lexical(query["query"], mailbox, query_day, depth)
+        receipt = search_engine.parse_query(query["query"], query_day)
+        retrieval_query = receipt.text if receipt.day is not None else query["query"]
+        lexical_rows = search_engine.search_lexical(
+            query["query"], mailbox, query_day, depth, rerank_receipt_day=False
+        )
         lexical_by_id = {row["doc_id"]: row for row in lexical_rows}
-        qvec = np.asarray(next(model.query_embed(query["query"])), dtype=np.float32)
+        qvec = np.asarray(next(model.query_embed(retrieval_query)), dtype=np.float32)
         qvec /= max(float(np.linalg.norm(qvec)), 1e-12)
         mask = mailbox_ids == mailbox
         chunk_scores = vectors[mask] @ qvec
@@ -83,18 +87,22 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
             doc_date = docs[doc_id].get("doc_dt")
             if query_day and doc_date and date.fromisoformat(doc_date) > query_day:
                 continue
+            if receipt.day is not None and doc_date != receipt.day.isoformat():
+                continue
             dense_by_doc[doc_id] = max(dense_by_doc.get(doc_id, -1.0), float(score))
         dense_order = sorted(dense_by_doc, key=lambda docid: (-dense_by_doc[docid], docid))[:depth]
         dense_rank = {docid: rank for rank, docid in enumerate(dense_order, 1)}
 
         candidate_ids = set(lexical_by_id) | set(dense_order)
         lexical_rank = {docid: rank for rank, docid in enumerate(lexical_by_id, 1)}
-        features = CandidateFeatures(search_engine, mailbox, tokenize(query["query"]), STOPWORDS, depth)
+        feature_builder = CandidateFeatures(
+            search_engine, mailbox, tokenize(retrieval_query), STOPWORDS, depth
+        )
         for docid in sorted(candidate_ids):
             lexical_row = lexical_by_id.get(docid)
             brank = lexical_rank.get(docid, 0)
             drank = dense_rank.get(docid, 0)
-            feature_row = features.for_document(
+            features = feature_builder.for_document(
                 docid,
                 lexical_score=lexical_row["score"] if lexical_row else 0.0,
                 lexical_rank=brank,
@@ -105,7 +113,7 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
                 "query_id": query_id,
                 "mailbox": mailbox,
                 "doc_id": docid,
-                "features": feature_row,
+                "features": features,
                 "label": int(docid in qrels.get(query_id, set())),
             })
         query_meta.append({"query_id": query_id, "mailbox": mailbox, "candidates": sorted(candidate_ids)})

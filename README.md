@@ -56,19 +56,19 @@ Use the HTTPS URL printed by SSH. Keep the tunnel and Uvicorn running during the
 
 ## Current backend
 
-The search engine extracts one receipt day from dates such as «20 ноября 2026», «20.11.2026», ISO dates, and relative dates such as «вчера». It intersects the selected mailbox's term index with that day's index, then ranks candidates with BM25 and Russian lemmatization. Within the selected day, the final score favors topic words in the subject or early in the message and rewards words that appear close together. A shared six-letter prefix for long Russian lemmas can connect forms such as «погрузка» and «погрузить». Without a recognized receipt day, the API retrieves up to 150 candidates each from BM25 and local 128M Potion embeddings. It combines the candidates and reranks them with the updated LightGBM model from `search-hybrid`. If the model or index is unavailable, search uses BM25. Query processing and inference run locally.
+The search engine only treats a date as a receipt date when the wording anchors it to arrival/receipt. Event dates inside a query remain part of the topic, and date ranges are not collapsed to one day. When a receipt day is present, it filters candidate mail and semantic vectors to that mailbox and day before ranking. BM25, local 128M Potion embeddings, a topic ranker, and LightGBM contribute to the final order. The topic ranker favors requested words in the subject and opening lines, phrase coverage, and close-together matches; it also uses a cautious shared-prefix rule for long Russian lemmas. Without a receipt-day filter, BM25 candidates and up to 150 candidates from local Potion embeddings are combined and reranked with LightGBM. Search inference is local, and the `/search` input contract is unchanged.
 
-The public development set contains 99 queries and 565 relevance labels. All rows use the same public queries.
+The public development set contains 99 queries and 565 relevance labels. All 99 queries include a receipt date, so this set measures date-constrained retrieval much more than everyday undated semantic search.
 
 | Mode | Recall@10 | Recall@100 | nDCG@10 | MRR@10 |
 | --- | ---: | ---: | ---: | ---: |
 | BM25 baseline | 0.5239 | 0.8637 | 0.3665 | 0.3582 |
-| Previous date-aware search | 0.8879 | 0.9923 | 0.9304 | 0.9503 |
-| Date-aware search with topic ranking | 0.9305 | 1.0000 | 0.9890 | 0.9949 |
+| Previous BM25 date-aware search | 0.8879 | 0.9923 | 0.9304 | 0.9503 |
+| Combined date-constrained hybrid and topic ranking | 0.9305 | 1.0000 | 0.9890 | 0.9949 |
 
-Across 35 public queries from two mailboxes excluded when comparing ranking weights, nDCG@10 rose from 0.8570 to 0.9843.
+Across 35 public queries from two mailboxes held out while comparing topic-ranking weights, nDCG@10 rose from 0.8570 to 0.9843. This is still public-query validation, not the organizers' private benchmark.
 
-The organizers measure final quality and latency on their private benchmark. Local HTTP stress tests used 495 requests per run and 64 concurrent clients. With the updated model fixed for both versions, two runs on public queries with the receipt-day phrases removed gave a hybrid-path p99 of 717–792 ms before the optimization and 491–495 ms afterward. The complete API responses matched across 198 comparison queries. The public receipt-day workload had p99 of 97–319 ms across two runs on the integrated build. See [measurement details](docs/architecture.md#6-как-оцениваем).
+The organizers measure final quality and latency on their private benchmark. The combined build completed 495 requests with 64 concurrent clients and no errors. Local end-to-end HTTP p99 was 274 ms for receipt-date queries and 758 ms for the same public queries with receipt phrases removed. A small, manually labeled no-date diagnostic set gives nDCG@10 0.6100 for hybrid vs 0.6113 for BM25, so quality without dates still needs improvement. An event-date-only case is not filtered to the wrong day; a query with both an event and receipt date raises its target from legacy rank 24 to rank 1. See [measurement details](docs/architecture.md#6-как-оцениваем).
 
 ## Start the backend
 
@@ -115,12 +115,11 @@ The frontend can call the API directly from a local development server; CORS is 
 Run from `backend/` after installing the backend dependencies:
 
 ```bash
-python evaluate.py --latency-repeats 5 --worst 10
-MAIL_RECEIPT_RERANK=0 python evaluate.py --latency-repeats 5 --worst 10
-MAIL_RECEIPT_DATES=0 python evaluate.py --mode lexical --latency-repeats 5
+python evaluate.py --suite both --latency-repeats 5 --worst 10
+python evaluate.py --suite both --mode lexical --latency-repeats 5
 ```
 
-This reports Recall@10, Recall@100, nDCG@10, MRR@10, and in-process p50/p95/p99 latency for the public queries.
+This reports Recall@10, Recall@100, nDCG@10, MRR@10, and in-process p50/p95/p99 latency separately for public queries and the diagnostic controls, each split by presence of a parsed receipt date. The control labels are manually curated and must not be treated as official benchmark scores.
 
 ## Enable hybrid retrieval
 
@@ -134,7 +133,7 @@ python build_semantic_index.py
 
 The build downloads the 128M embedding model and creates `backend/.cache/semantic-index.npz`. The corpus, model weights, and generated vectors stay outside Git. On the provided archive, the index contains 25,832 text chunks. `GET /health` reports `semantic_search` and `reranker` readiness. Set `MAIL_SEMANTIC_ENABLED=0` to run date-aware BM25 without the optional model.
 
-The included LightGBM model was trained on the public relevance labels. Reproduce the upstream experiment with receipt-date parsing disabled to compare the hybrid reranker against the original lexical baseline. The experiment trains separate models for the held-out queries and mailboxes.
+The included LightGBM model was trained on the public relevance labels. Reproduce the undated hybrid experiment with receipt-date parsing disabled to compare the reranker against the lexical baseline. The experiment trains separate models for held-out queries and mailboxes.
 
 ```bash
 MAIL_RECEIPT_DATES=0 python reranker_experiment.py --depth 150

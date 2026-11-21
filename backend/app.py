@@ -211,7 +211,15 @@ class MailSearch:
             # A missing/corrupt optional cache must not stop the lexical API from starting.
             print(f"Dense retrieval disabled ({type(exc).__name__})")
 
-    def search_lexical(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
+    def search_lexical(
+        self,
+        query: str,
+        mailbox: str,
+        as_of: date | None,
+        limit: int,
+        *,
+        rerank_receipt_day: bool = True,
+    ) -> list[dict[str, Any]]:
         receipt = self.parse_query(query, as_of)
         if as_of and receipt.day and receipt.day > as_of:
             return []
@@ -272,7 +280,7 @@ class MailSearch:
             if score or not terms:
                 scored.append((score, doc))
 
-        if USE_RECEIPT_RERANK and received_that_day and terms:
+        if rerank_receipt_day and USE_RECEIPT_RERANK and received_that_day and terms:
             ranker = ReceiptRanker(terms, STOPWORDS)
             if ranker.terms:
                 scored = self._rerank_receipts(scored, received_that_day, ranker)
@@ -315,7 +323,14 @@ class MailSearch:
     def parse_query(query: str, as_of: date | None) -> ReceiptQuery:
         return parse_receipt_query(query, as_of) if USE_RECEIPT_DATES else ReceiptQuery(query)
 
-    def _dense_search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> tuple[list[str], dict[str, float]]:
+    def _dense_search(
+        self,
+        query: str,
+        mailbox: str,
+        as_of: date | None,
+        limit: int,
+        received_on: date | None = None,
+    ) -> tuple[list[str], dict[str, float]]:
         mailbox_index = self.dense_by_mailbox.get(mailbox)
         if self.dense_model is None or mailbox_index is None:
             return [], {}
@@ -323,29 +338,51 @@ class MailSearch:
 
         qvec = np.asarray(next(self.dense_model.query_embed(query)), dtype=np.float32)
         qvec /= max(float(np.linalg.norm(qvec)), 1e-12)
-        chunk_scores = mailbox_index.vectors @ qvec
-        best = np.full(len(mailbox_index.doc_ids), -1.0, dtype=np.float32)
-        np.maximum.at(best, mailbox_index.chunk_to_doc, chunk_scores)
-
         doc_ids = mailbox_index.doc_ids
+        receipt_ordinals = mailbox_index.receipt_ordinals
+        eligible = np.ones(len(doc_ids), dtype=np.bool_)
+        if received_on is not None:
+            eligible &= receipt_ordinals == received_on.toordinal()
         if as_of is not None:
-            available = mailbox_index.receipt_ordinals <= as_of.toordinal()
-            best = best[available]
-            doc_ids = doc_ids[available]
-
-        # Doc IDs are already sorted, so stable score ordering preserves the tie-break.
-        ranked = np.argsort(-best, kind="stable")[:limit]
-        return doc_ids[ranked].tolist(), dict(zip(doc_ids.tolist(), best.tolist()))
+            eligible &= (receipt_ordinals == 0) | (receipt_ordinals <= as_of.toordinal())
+        if not np.any(eligible):
+            return [], {}
+        chunk_eligible = eligible[mailbox_index.chunk_to_doc]
+        if not np.any(chunk_eligible):
+            return [], {}
+        chunk_to_doc = mailbox_index.chunk_to_doc[chunk_eligible]
+        chunk_scores = mailbox_index.vectors[chunk_eligible] @ qvec
+        best_by_doc = np.full(len(doc_ids), -np.inf, dtype=np.float32)
+        np.maximum.at(best_by_doc, chunk_to_doc, chunk_scores)
+        doc_ids = doc_ids[eligible]
+        best_by_doc = best_by_doc[eligible]
+        # Doc IDs are already sorted; stable ordering preserves the existing tie break.
+        ranked = np.argsort(-best_by_doc, kind="stable")[:limit]
+        return doc_ids[ranked].tolist(), dict(zip(doc_ids.tolist(), best_by_doc.tolist()))
 
     def search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
-        if self.dense_model is None or self.parse_query(query, as_of).day is not None:
+        receipt = self.parse_query(query, as_of)
+        if as_of is not None and receipt.day is not None and receipt.day > as_of:
+            return []
+        if self.dense_model is None:
             return self.search_lexical(query, mailbox, as_of, limit)
         if not TOKEN_RE.search(query):
             return []
 
+        # Keep the user's natural-language topic while restricting both
+        # retrieval paths to the exact requested receipt day.
+        retrieval_query = receipt.text if receipt.day is not None else query
         depth = max(CANDIDATE_DEPTH, limit)
-        lexical = self.search_lexical(query, mailbox, as_of, depth)
-        dense_ids, dense_scores = self._dense_search(query, mailbox, as_of, depth)
+        lexical = self.search_lexical(
+            query,
+            mailbox,
+            as_of,
+            depth,
+            rerank_receipt_day=receipt.day is None,
+        )
+        dense_ids, dense_scores = self._dense_search(
+            retrieval_query, mailbox, as_of, depth, received_on=receipt.day
+        )
         lexical_by_id = {row["doc_id"]: row for row in lexical}
         lexical_ranks = {row["doc_id"]: rank for rank, row in enumerate(lexical, 1)}
         dense_ranks = {doc_id: rank for rank, doc_id in enumerate(dense_ids, 1)}
@@ -357,7 +394,7 @@ class MailSearch:
             import numpy as np
             from search_features import CandidateFeatures
 
-            features = CandidateFeatures(self, mailbox, tokenize(query), STOPWORDS, depth)
+            features = CandidateFeatures(self, mailbox, tokenize(retrieval_query), STOPWORDS, depth)
             feature_rows = [
                 features.for_document(
                     doc_id,
@@ -380,6 +417,34 @@ class MailSearch:
             for rank, doc_id in enumerate(dense_ids, 1):
                 fused[doc_id] += 0.1 / (60 + rank)
             ranked = sorted(fused.items(), key=lambda item: (-item[1], item[0]))
+
+        if receipt.day is not None and USE_RECEIPT_RERANK and receipt.text.strip():
+            raw_max = max((row["score"] for row in lexical), default=0.0) or 1.0
+            receipt_ranker = ReceiptRanker(tokenize(retrieval_query), STOPWORDS)
+            receipt_scores = {
+                doc_id: score
+                for doc_id in candidate_ids
+                if (score := receipt_ranker.score(
+                    self.token_sequences[doc_id],
+                    self.subject_freqs[doc_id],
+                    lexical_by_id.get(doc_id, {}).get("score", 0.0) / raw_max
+                    if doc_id in lexical_by_id else None,
+                )) is not None
+            }
+            receipt_rank = {
+                doc_id: rank
+                for rank, doc_id in enumerate(
+                    sorted(receipt_scores, key=lambda doc_id: (-receipt_scores[doc_id], doc_id)), 1
+                )
+            }
+            hybrid_rank = {doc_id: rank for rank, (doc_id, _) in enumerate(ranked, 1)}
+            combined_scores = {
+                doc_id: (10.0 / (60 + receipt_rank[doc_id]) if doc_id in receipt_rank else 0.0)
+                + 0.1 / (60 + hybrid_rank[doc_id])
+                for doc_id in candidate_ids
+            }
+            ranked_ids = sorted(candidate_ids, key=lambda doc_id: (-combined_scores[doc_id], doc_id))
+            ranked = [(doc_id, combined_scores[doc_id]) for doc_id in ranked_ids]
 
         return [self.result(self.by_id[doc_id], float(score)) for doc_id, score in ranked[:limit]]
 
