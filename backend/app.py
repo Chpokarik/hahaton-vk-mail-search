@@ -38,6 +38,7 @@ SUBJECT_BOOST = float(os.environ.get("MAIL_SUBJECT_BOOST", "0.25"))
 COVERAGE_BOOST = float(os.environ.get("MAIL_COVERAGE_BOOST", "2"))
 USE_RECEIPT_DATES = os.environ.get("MAIL_RECEIPT_DATES", "1") != "0"
 USE_RECEIPT_RERANK = os.environ.get("MAIL_RECEIPT_RERANK", "1") != "0"
+USE_RECEIPT_HYBRID = os.environ.get("MAIL_RECEIPT_HYBRID", "0") == "1"
 BM25_K1 = float(os.environ.get("MAIL_BM25_K1", "1.5"))
 BM25_B = float(os.environ.get("MAIL_BM25_B", "0.75"))
 SEMANTIC_MODEL = os.environ.get(
@@ -315,20 +316,32 @@ class MailSearch:
     def parse_query(query: str, as_of: date | None) -> ReceiptQuery:
         return parse_receipt_query(query, as_of) if USE_RECEIPT_DATES else ReceiptQuery(query)
 
-    def _dense_search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> tuple[list[str], dict[str, float]]:
+    def _dense_search(
+        self, query: str, mailbox: str, as_of: date | None, limit: int, received_on: date | None = None
+    ) -> tuple[list[str], dict[str, float]]:
         mailbox_index = self.dense_by_mailbox.get(mailbox)
-        if self.dense_model is None or mailbox_index is None:
+        if self.dense_model is None or mailbox_index is None or (as_of and received_on and received_on > as_of):
             return [], {}
         import numpy as np
 
+        doc_ids = mailbox_index.doc_ids
+        vectors = mailbox_index.vectors
+        chunk_to_doc = mailbox_index.chunk_to_doc
+        if received_on is not None:
+            available = mailbox_index.receipt_ordinals == received_on.toordinal()
+            if not available.any():
+                return [], {}
+            selected_chunks = available[chunk_to_doc]
+            vectors = vectors[selected_chunks]
+            chunk_to_doc = np.cumsum(available, dtype=np.intp)[chunk_to_doc[selected_chunks]] - 1
+            doc_ids = doc_ids[available]
+
         qvec = np.asarray(next(self.dense_model.query_embed(query)), dtype=np.float32)
         qvec /= max(float(np.linalg.norm(qvec)), 1e-12)
-        chunk_scores = mailbox_index.vectors @ qvec
-        best = np.full(len(mailbox_index.doc_ids), -1.0, dtype=np.float32)
-        np.maximum.at(best, mailbox_index.chunk_to_doc, chunk_scores)
+        best = np.full(len(doc_ids), -1.0, dtype=np.float32)
+        np.maximum.at(best, chunk_to_doc, vectors @ qvec)
 
-        doc_ids = mailbox_index.doc_ids
-        if as_of is not None:
+        if as_of is not None and received_on is None:
             available = mailbox_index.receipt_ordinals <= as_of.toordinal()
             best = best[available]
             doc_ids = doc_ids[available]
@@ -338,14 +351,20 @@ class MailSearch:
         return doc_ids[ranked].tolist(), dict(zip(doc_ids.tolist(), best.tolist()))
 
     def search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
-        if self.dense_model is None or self.parse_query(query, as_of).day is not None:
+        receipt = self.parse_query(query, as_of)
+        if self.dense_model is None or (receipt.day is not None and not USE_RECEIPT_HYBRID):
             return self.search_lexical(query, mailbox, as_of, limit)
-        if not TOKEN_RE.search(query):
+        if receipt.day and as_of and receipt.day > as_of:
             return []
+        retrieval_query = receipt.text if receipt.day is not None else query
+        if not TOKEN_RE.search(retrieval_query):
+            return self.search_lexical(query, mailbox, as_of, limit)
 
         depth = max(CANDIDATE_DEPTH, limit)
         lexical = self.search_lexical(query, mailbox, as_of, depth)
-        dense_ids, dense_scores = self._dense_search(query, mailbox, as_of, depth)
+        dense_ids, dense_scores = self._dense_search(retrieval_query, mailbox, as_of, depth, receipt.day)
+        if not dense_ids:
+            return lexical[:limit]
         lexical_by_id = {row["doc_id"]: row for row in lexical}
         lexical_ranks = {row["doc_id"]: rank for rank, row in enumerate(lexical, 1)}
         dense_ranks = {doc_id: rank for rank, doc_id in enumerate(dense_ids, 1)}
@@ -357,7 +376,7 @@ class MailSearch:
             import numpy as np
             from search_features import CandidateFeatures
 
-            features = CandidateFeatures(self, mailbox, tokenize(query), STOPWORDS, depth)
+            features = CandidateFeatures(self, mailbox, tokenize(retrieval_query), STOPWORDS, depth)
             feature_rows = [
                 features.for_document(
                     doc_id,
@@ -410,6 +429,7 @@ def health() -> dict[str, Any]:
         "semantic_search": search_engine.dense_model is not None,
         "reranker": search_engine.ranker is not None,
         "receipt_reranking": USE_RECEIPT_DATES and USE_RECEIPT_RERANK,
+        "receipt_hybrid": USE_RECEIPT_DATES and USE_RECEIPT_HYBRID and search_engine.dense_model is not None,
     }
 
 

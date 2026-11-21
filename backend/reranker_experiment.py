@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import random
 import statistics
-import zipfile
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
@@ -16,19 +14,12 @@ from typing import Any
 
 import lightgbm as lgb
 import numpy as np
-from fastembed import TextEmbedding
 
-from app import STOPWORDS, search_engine, tokenize
+from app import DEFAULT_ARCHIVE, STOPWORDS, search_engine, tokenize
+from evaluate import load_benchmark
 from search_features import FEATURE_NAMES, CandidateFeatures
 
 
-ROOT = Path(__file__).resolve().parents[1]
-ARCHIVE_PATH = Path(os.environ.get("MAIL_DATASET_ZIP", ROOT.parent / "mipt_mail_search_participants.zip"))
-INDEX_PATH = Path(os.environ.get("MAIL_VECTOR_INDEX", Path(__file__).resolve().parent / ".cache" / "semantic-index.npz"))
-MODEL_CACHE_PATH = Path(os.environ.get("MAIL_MODEL_CACHE", Path(__file__).resolve().parent / ".cache" / "fastembed"))
-MODEL_NAME = os.environ.get(
-    "MAIL_EMBEDDING_MODEL", "minishlab/potion-multilingual-128M"
-)
 def metrics(ranked: list[str], relevant: set[str]) -> tuple[float, float, float, float]:
     if not relevant:
         return 0.0, 0.0, 0.0, 0.0
@@ -41,28 +32,11 @@ def metrics(ranked: list[str], relevant: set[str]) -> tuple[float, float, float,
     return r10, r100, ndcg, mrr
 
 
-def read_data() -> tuple[list[dict[str, Any]], dict[str, set[str]], dict[str, dict[str, Any]]]:
-    with zipfile.ZipFile(ARCHIVE_PATH) as archive:
-        queries = [json.loads(line) for line in archive.read("queries_dev.jsonl").splitlines()]
-        rel_rows = [json.loads(line) for line in archive.read("qrels_dev.jsonl").splitlines()]
-        documents = [json.loads(line) for line in archive.read("documents.jsonl").splitlines()]
-    qrels: dict[str, set[str]] = defaultdict(set)
-    for row in rel_rows:
-        if row.get("relevance", 0) > 0:
-            qrels[row["query_id"]].add(row["doc_id"])
-    return queries, qrels, {doc["doc_id"]: doc for doc in documents}
-
-
 def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, set[str]]]:
-    queries, qrels, docs = read_data()
-    index = np.load(INDEX_PATH, allow_pickle=False)
-    chunk_ids = index["doc_ids"]
-    mailbox_ids = index["mailbox_ids"]
-    vectors = index["vectors"].astype(np.float32, copy=False)
-    embedding_args = {"model_name": MODEL_NAME, "cache_dir": str(MODEL_CACHE_PATH)}
-    if not MODEL_NAME.startswith("minishlab/potion-"):
-        embedding_args["threads"] = int(os.environ.get("MAIL_EMBED_THREADS", "4"))
-    model = TextEmbedding(**embedding_args)
+    if search_engine.dense_model is None:
+        raise SystemExit("Build the semantic index and enable semantic search before evaluating the ranker.")
+    archive = Path(os.environ.get("MAIL_DATASET_ZIP", DEFAULT_ARCHIVE))
+    queries, qrels = load_benchmark(archive)
     examples: list[dict[str, Any]] = []
     query_meta: list[dict[str, Any]] = []
 
@@ -70,26 +44,18 @@ def build_examples(depth: int) -> tuple[list[dict[str, Any]], list[dict[str, Any
         query_id = query["query_id"]
         mailbox = query["synthetic_user"]
         query_day = date.fromisoformat(query["query_date"]) if query.get("query_date") else None
+        receipt = search_engine.parse_query(query["query"], query_day)
+        retrieval_query = receipt.text if receipt.day is not None else query["query"]
         lexical_rows = search_engine.search_lexical(query["query"], mailbox, query_day, depth)
         lexical_by_id = {row["doc_id"]: row for row in lexical_rows}
-        qvec = np.asarray(next(model.query_embed(query["query"])), dtype=np.float32)
-        qvec /= max(float(np.linalg.norm(qvec)), 1e-12)
-        mask = mailbox_ids == mailbox
-        chunk_scores = vectors[mask] @ qvec
-        current_ids = chunk_ids[mask]
-        dense_by_doc: dict[str, float] = {}
-        for doc_id, score in zip(current_ids, chunk_scores):
-            doc_id = str(doc_id)
-            doc_date = docs[doc_id].get("doc_dt")
-            if query_day and doc_date and date.fromisoformat(doc_date) > query_day:
-                continue
-            dense_by_doc[doc_id] = max(dense_by_doc.get(doc_id, -1.0), float(score))
-        dense_order = sorted(dense_by_doc, key=lambda docid: (-dense_by_doc[docid], docid))[:depth]
+        dense_order, dense_by_doc = search_engine._dense_search(
+            retrieval_query, mailbox, query_day, depth, receipt.day
+        )
         dense_rank = {docid: rank for rank, docid in enumerate(dense_order, 1)}
 
         candidate_ids = set(lexical_by_id) | set(dense_order)
         lexical_rank = {docid: rank for rank, docid in enumerate(lexical_by_id, 1)}
-        features = CandidateFeatures(search_engine, mailbox, tokenize(query["query"]), STOPWORDS, depth)
+        features = CandidateFeatures(search_engine, mailbox, tokenize(retrieval_query), STOPWORDS, depth)
         for docid in sorted(candidate_ids):
             lexical_row = lexical_by_id.get(docid)
             brank = lexical_rank.get(docid, 0)

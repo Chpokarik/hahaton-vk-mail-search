@@ -22,7 +22,7 @@ npm --prefix frontend run dev
 
 Open the URL Vite prints (normally `http://localhost:5173`). For the live demo, in the largest mailbox:
 
-1. Click «Заказы от 20 ноября 2026». The results show the day parsed from the query.
+1. Click «Заказы, полученные 20 ноября 2026». The results show the day parsed from the query.
 2. Set «Поиск до» to 21 November 2026 and search for «Какие заказы пришли вчера?». It resolves to the same receipt date.
 3. Open a result and click the bookmark icon. Open «Избранное» to find the letter again. Bookmarks are scoped to the chosen mailbox and stored in the current browser.
 
@@ -65,6 +65,11 @@ The public development set contains 99 queries and 565 relevance labels. All row
 | BM25 baseline | 0.5239 | 0.8637 | 0.3665 | 0.3582 |
 | Previous date-aware search | 0.8879 | 0.9923 | 0.9304 | 0.9503 |
 | Date-aware search with topic ranking | 0.9305 | 1.0000 | 0.9890 | 0.9949 |
+| Date-constrained hybrid with the bundled ranker | 0.8986 | 1.0000 | 0.9421 | 0.9498 |
+
+The date parser distinguishes a receipt date («получено 20 ноября») from a date that describes an event or document. Date-aware topic ranking is the default for exact receipt days because it scored higher on the public set. Set `MAIL_RECEIPT_HYBRID=1` to try semantic candidates and LightGBM on exact days. In this mode the API restricts both candidate sources to the requested mailbox and day before ranking. `GET /health` reports whether this mode is active.
+
+The [diagnostic controls](backend/benchmark_controls/README.md) are reported separately. The default search scored nDCG@10 of 0.6100 on seven queries without a receipt date and found the target at rank 1 in the single control with both an event date and a receipt date.
 
 Across 35 public queries from two mailboxes excluded when comparing ranking weights, nDCG@10 rose from 0.8570 to 0.9843.
 
@@ -115,12 +120,13 @@ The frontend can call the API directly from a local development server; CORS is 
 Run from `backend/` after installing the backend dependencies:
 
 ```bash
-python evaluate.py --latency-repeats 5 --worst 10
+python evaluate.py --suite both --latency-repeats 5 --worst 10
+MAIL_RECEIPT_HYBRID=1 python evaluate.py --suite both --latency-repeats 5
 MAIL_RECEIPT_RERANK=0 python evaluate.py --latency-repeats 5 --worst 10
 MAIL_RECEIPT_DATES=0 python evaluate.py --mode lexical --latency-repeats 5
 ```
 
-This reports Recall@10, Recall@100, nDCG@10, MRR@10, and in-process p50/p95/p99 latency for the public queries.
+This reports Recall@10, Recall@100, nDCG@10, MRR@10, and in-process p50/p95/p99 latency. Each suite is split by whether the parser recognized a receipt date. The default suite uses organizer queries.
 
 ## Enable hybrid retrieval
 
@@ -134,10 +140,10 @@ python build_semantic_index.py
 
 The build downloads the 128M embedding model and creates `backend/.cache/semantic-index.npz`. The corpus, model weights, and generated vectors stay outside Git. On the provided archive, the index contains 25,832 text chunks. `GET /health` reports `semantic_search` and `reranker` readiness. Set `MAIL_SEMANTIC_ENABLED=0` to run date-aware BM25 without the optional model.
 
-The included LightGBM model was trained on the public relevance labels. Reproduce the upstream experiment with receipt-date parsing disabled to compare the hybrid reranker against the original lexical baseline. The experiment trains separate models for the held-out queries and mailboxes.
+The included LightGBM model was trained on the public relevance labels. The experiment below uses the same date-constrained candidate generation as the API and trains separate models for held-out queries and mailboxes. Set `MAIL_RECEIPT_DATES=0` to evaluate candidate generation with date parsing disabled.
 
 ```bash
-MAIL_RECEIPT_DATES=0 python reranker_experiment.py --depth 150
+python reranker_experiment.py --depth 150
 ```
 
 Stress the running API with both the original workload and a workload with the explicit receipt-date phrases removed. The second command measures performance of the hybrid path:
@@ -157,7 +163,7 @@ The ZIP archive is deliberately not stored in Git. It contains pseudonymized ema
 
 **0:00–0:15. Задача.** «В почте мы помним смысл письма и когда оно пришло. Точная тема обычно забывается. Мы сделали поиск, которому можно написать: “Какие заказы пришли вчера?”»
 
-**0:15–0:45. Живой показ.** Откройте самый большой ящик. Поставьте «Поиск до» на 21 ноября 2026 года. Введите «Какие заказы пришли вчера?». Покажите, что приложение само вычислило 20 ноября, и откройте одно из двух писем. Добавьте его в «Избранное» и покажите, как быстро к нему вернуться. Если нужно сэкономить время, нажмите готовый пример «Заказы от 20 ноября 2026».
+**0:15–0:45. Живой показ.** Откройте самый большой ящик. Поставьте «Поиск до» на 21 ноября 2026 года. Введите «Какие заказы пришли вчера?». Покажите, что приложение само вычислило 20 ноября, и откройте одно из двух писем. Добавьте его в «Избранное» и покажите, как быстро к нему вернуться. Если нужно сэкономить время, нажмите готовый пример «Заказы, полученные 20 ноября 2026».
 
 **0:45–1:05. Как устроен поиск.** «Сначала определяем ящик и дату. Если день указан в запросе, ищем только среди полученных в этот день писем и уточняем их порядок по совпадениям в теме и в начале письма. Учитываем родственные формы слов вроде «погрузка» и «погрузить». Если точного дня нет, объединяем результаты поиска по словам и поискового индекса на эмбеддингах, а LightGBM уточняет порядок. Обработка выполняется на сервере, прямо на машине с архивом».
 

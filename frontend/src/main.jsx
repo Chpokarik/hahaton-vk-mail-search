@@ -12,7 +12,7 @@ import './style.css'
 
 const PAGE_SIZE = 20
 const SEARCH_LIMIT = 50
-const SUGGESTIONS = ['Заказы от 20 ноября 2026', 'Счёт на оплату', 'Покупатель хочет вернуть товар']
+const SUGGESTIONS = ['Заказы, полученные 20 ноября 2026', 'Счёт на оплату', 'Покупатель хочет вернуть товар']
 
 function useRequest(load) {
   const [state, setState] = useState(null)

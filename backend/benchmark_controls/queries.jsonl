@@ -1,0 +1,8 @@
+{"query_id": "C-001-KUZMA-INVOICE", "synthetic_user": "box-12259a301ee2", "query": "Какие счета за услуги муниципального найма выставили Кузьме Дмитриевичу Шубину?", "query_date": "2028-12-31"}
+{"query_id": "C-002-EREMEY-PENALTY", "synthetic_user": "box-12259a301ee2", "query": "Найди начисления за просрочку Еремею Суханову", "query_date": "2028-12-31"}
+{"query_id": "C-003-CANCELLED-ORDERS", "synthetic_user": "box-fad2b057e79a", "query": "Покупатели передумали: какие заказы продавцу больше не нужно отправлять?", "query_date": "2028-12-31"}
+{"query_id": "C-004-MONITOR-PARAPHRASE", "synthetic_user": "box-90560850fd8e", "query": "Заказали жидкость, которой протирают экран и оптику, флакон 100 мл", "query_date": "2028-12-31"}
+{"query_id": "C-005-MONITOR-TYPO", "synthetic_user": "box-90560850fd8e", "query": "Заказали средство для чистки мониторов и оптки 100 мл", "query_date": "2028-12-31"}
+{"query_id": "C-006-DB-MISSING-FIELD", "synthetic_user": "box-fda57474896e", "query": "При выполнении операции в информационной базе у объекта не найдено обязательное поле", "query_date": "2028-12-31"}
+{"query_id": "C-007-EVENT-DATE", "synthetic_user": "box-fda57474896e", "query": "Найди письмо об ошибке на этапе производства ОНПР-53.7.1, свойство датировано 29.07.2028", "query_date": "2028-08-10"}
+{"query_id": "C-008-EVENT-AND-RECEIPT", "synthetic_user": "box-fda57474896e", "query": "Покажи письмо об ошибке заказа на производство ОНПР-324.6 от 19.07.2027, полученное 6 августа 2028 года", "query_date": "2028-08-10"}
