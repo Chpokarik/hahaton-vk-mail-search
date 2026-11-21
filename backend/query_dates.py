@@ -22,10 +22,11 @@ DATE_RE = re.compile(
     re.IGNORECASE,
 )
 DATE_CONTEXT = re.compile(
-    r"\b(?:полученн\w*|пришедш\w*|поступивш\w*|приш[её]л|пришла|пришли)\s*$",
+    r"\b(?:полученн\w*|получени[еяюи]\w*|пришедш\w*|поступивш\w*|приш[её]л\w*)\s*$",
     re.IGNORECASE,
 )
-RANGE_PREFIX = re.compile(r"\b(?:с|со|до|после|между|раньше|позже)\s*$", re.IGNORECASE)
+RANGE_PREFIX = re.compile(r"\b(?:с|со|до|после|между|раньше|позже|по)\s*$", re.IGNORECASE)
+RANGE_CONTEXT = re.compile(r"\bмежду\b.*\b(?:и|по)\b", re.IGNORECASE)
 QUERY_PREFIX = re.compile(
     r"^\s*(?:(?:пожалуйста|найди(?:те)?|покажи(?:те)?|отыщи(?:те)?|ищу)\b[\s,]+)+",
     re.IGNORECASE,
@@ -41,12 +42,23 @@ class ReceiptQuery:
 def parse_receipt_query(text: str, reference: date | None) -> ReceiptQuery:
     query = QUERY_PREFIX.sub("", text)
     matches = list(DATE_RE.finditer(query))
-    if len(matches) != 1:
+    if not matches:
         return ReceiptQuery(query)
-    match = matches[0]
-    before = query[:match.start()]
-    if RANGE_PREFIX.search(before):
+
+    # A date is a receipt-date filter only when the wording anchors it to
+    # delivery/receipt. This leaves dates that describe events inside a mail
+    # in the text query, and lets us choose the receipt date when both occur.
+    anchored: list[tuple[re.Match[str], re.Match[str]]] = []
+    for match in matches:
+        before = query[:match.start()]
+        context = DATE_CONTEXT.search(before)
+        if not context or RANGE_PREFIX.search(before) or RANGE_CONTEXT.search(before):
+            continue
+        anchored.append((match, context))
+    if len(anchored) != 1:
         return ReceiptQuery(query)
+
+    match, context = anchored[0]
     anchor = reference or date.today()
     try:
         if match["relative"]:
@@ -65,6 +77,5 @@ def parse_receipt_query(text: str, reference: date | None) -> ReceiptQuery:
     except (ValueError, OverflowError):
         return ReceiptQuery(query)
 
-    before = DATE_CONTEXT.sub("", before)
-    after = query[match.end():]
-    return ReceiptQuery(f"{before} {after}".strip(" ,.;"), day)
+    remaining = f"{query[:context.start()]} {query[match.end():]}"
+    return ReceiptQuery(re.sub(r"\s+", " ", remaining).strip(" ,.;"), day)

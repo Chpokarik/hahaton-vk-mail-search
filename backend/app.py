@@ -250,7 +250,14 @@ class MailSearch:
     def parse_query(query: str, as_of: date | None) -> ReceiptQuery:
         return parse_receipt_query(query, as_of) if USE_RECEIPT_DATES else ReceiptQuery(query)
 
-    def _dense_search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> tuple[list[str], dict[str, float]]:
+    def _dense_search(
+        self,
+        query: str,
+        mailbox: str,
+        as_of: date | None,
+        limit: int,
+        received_on: date | None = None,
+    ) -> tuple[list[str], dict[str, float]]:
         if self.dense_model is None:
             return [], {}
         import numpy as np
@@ -261,28 +268,47 @@ class MailSearch:
         if mailbox_data is None:
             return [], {}
         doc_ids, vectors = mailbox_data
+        if received_on is not None or as_of is not None:
+            eligible = np.fromiter(
+                (
+                    (received_on is None or self.receipt_dates.get(str(doc_id)) == received_on)
+                    and (
+                        as_of is None
+                        or self.receipt_dates.get(str(doc_id)) is None
+                        or self.receipt_dates[str(doc_id)] <= as_of
+                    )
+                    for doc_id in doc_ids
+                ),
+                dtype=np.bool_,
+                count=len(doc_ids),
+            )
+            doc_ids = doc_ids[eligible]
+            vectors = vectors[eligible]
+        if not len(doc_ids):
+            return [], {}
         scores = vectors @ qvec
         best: dict[str, float] = {}
         for raw_doc_id, score in zip(doc_ids, scores):
             doc_id = str(raw_doc_id)
-            raw_date = self.by_id[doc_id].get("doc_dt")
-            if as_of is not None and raw_date:
-                try:
-                    if date.fromisoformat(raw_date) > as_of:
-                        continue
-                except ValueError:
-                    pass
             best[doc_id] = max(best.get(doc_id, -1.0), float(score))
         ranked = sorted(best, key=lambda doc_id: (-best[doc_id], doc_id))[:limit]
         return ranked, best
 
     def search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
-        if self.dense_model is None or self.parse_query(query, as_of).day is not None:
+        receipt = self.parse_query(query, as_of)
+        if as_of is not None and receipt.day is not None and receipt.day > as_of:
+            return []
+        if self.dense_model is None:
             return self.search_lexical(query, mailbox, as_of, limit)
 
+        # Keep the user's natural-language topic while restricting both
+        # retrieval paths to the exact requested receipt day.
+        retrieval_query = receipt.text if receipt.day is not None else query
         depth = max(CANDIDATE_DEPTH, limit)
         lexical = self.search_lexical(query, mailbox, as_of, depth)
-        dense_ids, dense_scores = self._dense_search(query, mailbox, as_of, depth)
+        dense_ids, dense_scores = self._dense_search(
+            retrieval_query, mailbox, as_of, depth, received_on=receipt.day
+        )
         lexical_by_id = {row["doc_id"]: row for row in lexical}
         lexical_ranks = {row["doc_id"]: rank for rank, row in enumerate(lexical, 1)}
         dense_ranks = {doc_id: rank for rank, doc_id in enumerate(dense_ids, 1)}
@@ -297,7 +323,7 @@ class MailSearch:
             feature_rows = [
                 candidate_features(
                     self,
-                    query,
+                    retrieval_query,
                     doc_id,
                     lexical_score=lexical_by_id.get(doc_id, {}).get("score", 0.0),
                     lexical_rank=lexical_ranks.get(doc_id, 0),
