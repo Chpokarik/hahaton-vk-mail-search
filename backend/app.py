@@ -9,6 +9,7 @@ import re
 import zipfile
 from collections import Counter, defaultdict
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -18,11 +19,45 @@ from pydantic import BaseModel, Field
 
 
 TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
+SUBJECT_RE = re.compile(r"^\s*(?:тема|subject)\s*[:：]\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 DEFAULT_ARCHIVE = Path(__file__).resolve().parents[2] / "mipt_mail_search_participants.zip"
+USE_LEMMAS = os.environ.get("MAIL_LEMMATIZE", "1") != "0"
+MAILBOX_LOCAL_IDF = os.environ.get("MAIL_MAILBOX_IDF", "1") != "0"
+SUBJECT_BOOST = float(os.environ.get("MAIL_SUBJECT_BOOST", "0.25"))
+COVERAGE_BOOST = float(os.environ.get("MAIL_COVERAGE_BOOST", "2"))
+BM25_K1 = float(os.environ.get("MAIL_BM25_K1", "1.5"))
+BM25_B = float(os.environ.get("MAIL_BM25_B", "0.75"))
+STOPWORDS = {
+    "а", "без", "бы", "в", "вам", "вас", "весь", "во", "вот", "все", "всего", "всех", "вы",
+    "где", "да", "для", "до", "его", "ее", "если", "есть", "еще", "же", "за", "и", "из",
+    "или", "им", "их", "к", "как", "ко", "когда", "кто", "ли", "мне", "мы", "на", "над",
+    "нам", "нас", "не", "него", "нее", "нет", "ни", "них", "но", "ну", "о", "об", "один",
+    "он", "она", "они", "оно", "от", "по", "под", "при", "про", "с", "со", "так", "такой",
+    "там", "те", "тем", "то", "того", "тоже", "той", "только", "том", "ты", "у", "уже", "хотя",
+    "чего", "чем", "что", "чтобы", "эта", "эти", "это", "я",
+}
+
+
+@lru_cache(maxsize=250_000)
+def normalize_token(token: str) -> str:
+    token = token.lower().replace("ё", "е")
+    if not USE_LEMMAS or not CYRILLIC_RE.search(token):
+        return token
+    # Lazy import keeps the baseline usable without optional morphology packages.
+    global _morph
+    if _morph is None:
+        from pymorphy3 import MorphAnalyzer
+
+        _morph = MorphAnalyzer()
+    return _morph.parse(token)[0].normal_form
+
+
+_morph: Any = None
 
 
 def tokenize(text: str) -> list[str]:
-    return [token.lower().replace("ё", "е") for token in TOKEN_RE.findall(text)]
+    return [normalize_token(token) for token in TOKEN_RE.findall(text)]
 
 
 def read_documents() -> list[dict[str, Any]]:
@@ -42,32 +77,47 @@ class MailSearch:
         self.by_id = {doc["doc_id"]: doc for doc in documents}
         self.lengths: dict[str, int] = {}
         self.term_freqs: dict[str, Counter[str]] = {}
+        self.subject_freqs: dict[str, Counter[str]] = {}
         self.postings: dict[str, set[str]] = defaultdict(set)
+        self.mailbox_postings: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+        self.mailbox_doc_counts: Counter[str] = Counter()
+        self.mailbox_length_sums: Counter[str] = Counter()
         for doc in documents:
             tokens = tokenize(doc.get("doc", ""))
             doc_id = doc["doc_id"]
+            mailbox = doc["synthetic_user"]
             self.lengths[doc_id] = len(tokens)
+            self.mailbox_doc_counts[mailbox] += 1
+            self.mailbox_length_sums[mailbox] += len(tokens)
             freqs = Counter(tokens)
             self.term_freqs[doc_id] = freqs
+            subject_match = SUBJECT_RE.search(doc.get("doc", ""))
+            self.subject_freqs[doc_id] = Counter(tokenize(subject_match.group(1))) if subject_match else Counter()
             for term in freqs:
                 self.postings[term].add(doc_id)
+                self.mailbox_postings[mailbox][term].add(doc_id)
         self.avg_len = sum(self.lengths.values()) / max(1, len(self.lengths))
+        self.mailbox_avg_len = {
+            mailbox: self.mailbox_length_sums[mailbox] / count
+            for mailbox, count in self.mailbox_doc_counts.items()
+        }
 
     def search(self, query: str, mailbox: str, as_of: date | None, limit: int) -> list[dict[str, Any]]:
         terms = tokenize(query)
         if not terms:
             return []
+        coverage_terms = set(terms) - STOPWORDS
         candidate_ids: set[str] = set()
+        mailbox_index = self.mailbox_postings.get(mailbox, {})
         for term in set(terms):
-            candidate_ids.update(self.postings.get(term, ()))
+            candidate_ids.update(mailbox_index.get(term, ()))
 
-        n_docs = len(self.documents)
-        k1, b = 1.5, 0.75
+        n_docs = self.mailbox_doc_counts.get(mailbox, 0) if MAILBOX_LOCAL_IDF else len(self.documents)
+        avg_len = self.mailbox_avg_len.get(mailbox, self.avg_len) if MAILBOX_LOCAL_IDF else self.avg_len
+        k1, b = BM25_K1, BM25_B
         scored: list[tuple[float, dict[str, Any]]] = []
         for doc_id in candidate_ids:
             doc = self.by_id[doc_id]
-            if doc["synthetic_user"] != mailbox:
-                continue
             raw_date = doc.get("doc_dt")
             if as_of is not None and raw_date:
                 try:
@@ -82,14 +132,23 @@ class MailSearch:
                 tf = freqs.get(term, 0)
                 if not tf:
                     continue
-                df = len(self.postings.get(term, ()))
+                df = len(mailbox_index.get(term, ())) if MAILBOX_LOCAL_IDF else len(self.postings.get(term, ()))
                 idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
-                denom = tf + k1 * (1 - b + b * length / max(self.avg_len, 1))
+                denom = tf + k1 * (1 - b + b * length / max(avg_len, 1))
                 score += idf * tf * (k1 + 1) / denom
+                if SUBJECT_BOOST:
+                    subject_tf = self.subject_freqs[doc_id].get(term, 0)
+                    if subject_tf:
+                        subject_denom = subject_tf + k1 * (1 - b + b * 8 / 12)
+                        subject_score = idf * subject_tf * (k1 + 1) / subject_denom
+                        score += SUBJECT_BOOST * subject_score
+            if COVERAGE_BOOST and coverage_terms:
+                covered = sum(1 for term in coverage_terms if freqs.get(term, 0))
+                score *= 1 + COVERAGE_BOOST * covered / len(coverage_terms)
             if score:
                 scored.append((score, doc))
 
-        scored.sort(key=lambda item: item[0], reverse=True)
+        scored.sort(key=lambda item: (-item[0], item[1]["doc_id"]))
         return [
             {
                 "doc_id": doc["doc_id"],
