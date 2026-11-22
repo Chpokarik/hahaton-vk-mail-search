@@ -1,4 +1,5 @@
-const apiBase = (import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:8000').replace(/\/+$/, '')
+const defaultApiBase = import.meta.env.PROD ? '' : 'http://localhost:8000'
+const apiBase = (import.meta.env.VITE_API_BASE_URL?.trim() || defaultApiBase).replace(/\/+$/, '')
 
 async function request(path, { signal, body } = {}) {
   const response = await fetch(`${apiBase}${path}`, {
